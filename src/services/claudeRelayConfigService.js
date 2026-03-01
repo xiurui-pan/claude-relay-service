@@ -38,6 +38,18 @@ const DEFAULT_CONFIG = {
   openaiAdaptiveSecondaryWeight: appConfig.openaiScheduling?.secondaryWeight ?? 0.45,
   openaiAdaptiveResetTimeWeight: appConfig.openaiScheduling?.resetTimeWeight ?? 0.25,
   openaiAdaptiveManualPriorityWeight: appConfig.openaiScheduling?.manualPriorityWeight ?? 0.1,
+  openaiAdaptivePrimarySaturationPercent:
+    appConfig.openaiScheduling?.primarySaturationPercent ?? 88,
+  openaiAdaptiveSecondarySaturationPercent:
+    appConfig.openaiScheduling?.secondarySaturationPercent ?? 82,
+  openaiAdaptivePrimaryHardStopPercent: appConfig.openaiScheduling?.primaryHardStopPercent ?? 98,
+  openaiAdaptiveSecondaryHardStopPercent:
+    appConfig.openaiScheduling?.secondaryHardStopPercent ?? 96,
+  openaiAdaptiveHardStopGraceSeconds: appConfig.openaiScheduling?.hardStopGraceSeconds ?? 180,
+  openaiAdaptiveNearCapPenaltyWeight: appConfig.openaiScheduling?.nearCapPenaltyWeight ?? 0.65,
+  openaiAdaptiveScheduleDriftPenaltyWeight:
+    appConfig.openaiScheduling?.scheduleDriftPenaltyWeight ?? 0.35,
+  openaiAdaptiveSelectionBandDelta: appConfig.openaiScheduling?.selectionBandDelta ?? 3,
   updatedAt: null,
   updatedBy: null
 }

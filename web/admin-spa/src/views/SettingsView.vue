@@ -1234,6 +1234,129 @@
                 </div>
 
                 <div>
+                  <label class="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                    5h 窗口饱和拐点（primarySaturationPercent）
+                  </label>
+                  <input
+                    v-model.number="claudeConfig.openaiAdaptivePrimarySaturationPercent"
+                    class="mt-1 block w-full max-w-xs rounded-lg border border-gray-300 bg-white px-3 py-2 shadow-sm focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 dark:border-gray-500 dark:bg-gray-700 dark:text-white sm:text-sm"
+                    max="100"
+                    min="50"
+                    step="1"
+                    type="number"
+                    @change="saveClaudeConfig"
+                  />
+                </div>
+
+                <div>
+                  <label class="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                    周窗口饱和拐点（secondarySaturationPercent）
+                  </label>
+                  <input
+                    v-model.number="claudeConfig.openaiAdaptiveSecondarySaturationPercent"
+                    class="mt-1 block w-full max-w-xs rounded-lg border border-gray-300 bg-white px-3 py-2 shadow-sm focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 dark:border-gray-500 dark:bg-gray-700 dark:text-white sm:text-sm"
+                    max="100"
+                    min="40"
+                    step="1"
+                    type="number"
+                    @change="saveClaudeConfig"
+                  />
+                </div>
+
+                <div>
+                  <label class="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                    5h 窗口硬保护阈值（primaryHardStopPercent）
+                  </label>
+                  <input
+                    v-model.number="claudeConfig.openaiAdaptivePrimaryHardStopPercent"
+                    class="mt-1 block w-full max-w-xs rounded-lg border border-gray-300 bg-white px-3 py-2 shadow-sm focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 dark:border-gray-500 dark:bg-gray-700 dark:text-white sm:text-sm"
+                    max="100"
+                    min="80"
+                    step="1"
+                    type="number"
+                    @change="saveClaudeConfig"
+                  />
+                </div>
+
+                <div>
+                  <label class="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                    周窗口硬保护阈值（secondaryHardStopPercent）
+                  </label>
+                  <input
+                    v-model.number="claudeConfig.openaiAdaptiveSecondaryHardStopPercent"
+                    class="mt-1 block w-full max-w-xs rounded-lg border border-gray-300 bg-white px-3 py-2 shadow-sm focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 dark:border-gray-500 dark:bg-gray-700 dark:text-white sm:text-sm"
+                    max="100"
+                    min="70"
+                    step="1"
+                    type="number"
+                    @change="saveClaudeConfig"
+                  />
+                </div>
+
+                <div>
+                  <label class="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                    硬保护宽限秒数（hardStopGraceSeconds）
+                  </label>
+                  <input
+                    v-model.number="claudeConfig.openaiAdaptiveHardStopGraceSeconds"
+                    class="mt-1 block w-full max-w-xs rounded-lg border border-gray-300 bg-white px-3 py-2 shadow-sm focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 dark:border-gray-500 dark:bg-gray-700 dark:text-white sm:text-sm"
+                    max="3600"
+                    min="0"
+                    step="1"
+                    type="number"
+                    @change="saveClaudeConfig"
+                  />
+                </div>
+
+                <div>
+                  <label class="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                    近上限惩罚权重（nearCapPenaltyWeight）
+                  </label>
+                  <input
+                    v-model.number="claudeConfig.openaiAdaptiveNearCapPenaltyWeight"
+                    class="mt-1 block w-full max-w-xs rounded-lg border border-gray-300 bg-white px-3 py-2 shadow-sm focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 dark:border-gray-500 dark:bg-gray-700 dark:text-white sm:text-sm"
+                    max="1"
+                    min="0"
+                    step="0.01"
+                    type="number"
+                    @change="saveClaudeConfig"
+                  />
+                </div>
+
+                <div>
+                  <label class="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                    超前消耗惩罚权重（scheduleDriftPenaltyWeight）
+                  </label>
+                  <input
+                    v-model.number="claudeConfig.openaiAdaptiveScheduleDriftPenaltyWeight"
+                    class="mt-1 block w-full max-w-xs rounded-lg border border-gray-300 bg-white px-3 py-2 shadow-sm focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 dark:border-gray-500 dark:bg-gray-700 dark:text-white sm:text-sm"
+                    max="1"
+                    min="0"
+                    step="0.01"
+                    type="number"
+                    @change="saveClaudeConfig"
+                  />
+                </div>
+
+                <div>
+                  <label class="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                    分流带宽（selectionBandDelta）
+                  </label>
+                  <input
+                    v-model.number="claudeConfig.openaiAdaptiveSelectionBandDelta"
+                    class="mt-1 block w-full max-w-xs rounded-lg border border-gray-300 bg-white px-3 py-2 shadow-sm focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 dark:border-gray-500 dark:bg-gray-700 dark:text-white sm:text-sm"
+                    max="20"
+                    min="0"
+                    step="1"
+                    type="number"
+                    @change="saveClaudeConfig"
+                  />
+                  <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                    在“最佳优先级 + N”候选里按最久未使用分流，降低瞬时打爆风险
+                  </p>
+                </div>
+
+                <div>
                   <label class="inline-flex cursor-pointer items-center">
                     <input
                       v-model="claudeConfig.openaiAdaptiveIncludeResponses"
@@ -2090,6 +2213,14 @@ const claudeConfig = ref({
   openaiAdaptiveSecondaryWeight: 0.45,
   openaiAdaptiveResetTimeWeight: 0.25,
   openaiAdaptiveManualPriorityWeight: 0.1,
+  openaiAdaptivePrimarySaturationPercent: 88,
+  openaiAdaptiveSecondarySaturationPercent: 82,
+  openaiAdaptivePrimaryHardStopPercent: 98,
+  openaiAdaptiveSecondaryHardStopPercent: 96,
+  openaiAdaptiveHardStopGraceSeconds: 180,
+  openaiAdaptiveNearCapPenaltyWeight: 0.65,
+  openaiAdaptiveScheduleDriftPenaltyWeight: 0.35,
+  openaiAdaptiveSelectionBandDelta: 3,
   updatedAt: null,
   updatedBy: null
 })
@@ -2398,6 +2529,21 @@ const loadClaudeConfig = async () => {
         openaiAdaptiveResetTimeWeight: response.config?.openaiAdaptiveResetTimeWeight ?? 0.25,
         openaiAdaptiveManualPriorityWeight:
           response.config?.openaiAdaptiveManualPriorityWeight ?? 0.1,
+        openaiAdaptivePrimarySaturationPercent:
+          response.config?.openaiAdaptivePrimarySaturationPercent ?? 88,
+        openaiAdaptiveSecondarySaturationPercent:
+          response.config?.openaiAdaptiveSecondarySaturationPercent ?? 82,
+        openaiAdaptivePrimaryHardStopPercent:
+          response.config?.openaiAdaptivePrimaryHardStopPercent ?? 98,
+        openaiAdaptiveSecondaryHardStopPercent:
+          response.config?.openaiAdaptiveSecondaryHardStopPercent ?? 96,
+        openaiAdaptiveHardStopGraceSeconds:
+          response.config?.openaiAdaptiveHardStopGraceSeconds ?? 180,
+        openaiAdaptiveNearCapPenaltyWeight:
+          response.config?.openaiAdaptiveNearCapPenaltyWeight ?? 0.65,
+        openaiAdaptiveScheduleDriftPenaltyWeight:
+          response.config?.openaiAdaptiveScheduleDriftPenaltyWeight ?? 0.35,
+        openaiAdaptiveSelectionBandDelta: response.config?.openaiAdaptiveSelectionBandDelta ?? 3,
         updatedAt: response.config?.updatedAt || null,
         updatedBy: response.config?.updatedBy || null
       }
@@ -2437,7 +2583,19 @@ const saveClaudeConfig = async () => {
         claudeConfig.value.openaiAdaptiveCodexUsageMaxAgeMinutes,
       openaiAdaptiveSecondaryWeight: claudeConfig.value.openaiAdaptiveSecondaryWeight,
       openaiAdaptiveResetTimeWeight: claudeConfig.value.openaiAdaptiveResetTimeWeight,
-      openaiAdaptiveManualPriorityWeight: claudeConfig.value.openaiAdaptiveManualPriorityWeight
+      openaiAdaptiveManualPriorityWeight: claudeConfig.value.openaiAdaptiveManualPriorityWeight,
+      openaiAdaptivePrimarySaturationPercent:
+        claudeConfig.value.openaiAdaptivePrimarySaturationPercent,
+      openaiAdaptiveSecondarySaturationPercent:
+        claudeConfig.value.openaiAdaptiveSecondarySaturationPercent,
+      openaiAdaptivePrimaryHardStopPercent: claudeConfig.value.openaiAdaptivePrimaryHardStopPercent,
+      openaiAdaptiveSecondaryHardStopPercent:
+        claudeConfig.value.openaiAdaptiveSecondaryHardStopPercent,
+      openaiAdaptiveHardStopGraceSeconds: claudeConfig.value.openaiAdaptiveHardStopGraceSeconds,
+      openaiAdaptiveNearCapPenaltyWeight: claudeConfig.value.openaiAdaptiveNearCapPenaltyWeight,
+      openaiAdaptiveScheduleDriftPenaltyWeight:
+        claudeConfig.value.openaiAdaptiveScheduleDriftPenaltyWeight,
+      openaiAdaptiveSelectionBandDelta: claudeConfig.value.openaiAdaptiveSelectionBandDelta
     }
 
     const response = await httpApis.updateClaudeRelayConfigApi(payload, {

@@ -23,7 +23,15 @@ class UnifiedOpenAIScheduler {
       codexUsageMaxAgeMinutes: adaptiveConfig.codexUsageMaxAgeMinutes,
       secondaryWeight: adaptiveConfig.secondaryWeight,
       resetTimeWeight: adaptiveConfig.resetTimeWeight,
-      manualPriorityWeight: adaptiveConfig.manualPriorityWeight
+      manualPriorityWeight: adaptiveConfig.manualPriorityWeight,
+      primarySaturationPercent: adaptiveConfig.primarySaturationPercent,
+      secondarySaturationPercent: adaptiveConfig.secondarySaturationPercent,
+      primaryHardStopPercent: adaptiveConfig.primaryHardStopPercent,
+      secondaryHardStopPercent: adaptiveConfig.secondaryHardStopPercent,
+      hardStopGraceSeconds: adaptiveConfig.hardStopGraceSeconds,
+      nearCapPenaltyWeight: adaptiveConfig.nearCapPenaltyWeight,
+      scheduleDriftPenaltyWeight: adaptiveConfig.scheduleDriftPenaltyWeight,
+      selectionBandDelta: adaptiveConfig.selectionBandDelta
     }
 
     try {
@@ -40,7 +48,28 @@ class UnifiedOpenAIScheduler {
         resetTimeWeight:
           relayConfig.openaiAdaptiveResetTimeWeight ?? fallbackOptions.resetTimeWeight,
         manualPriorityWeight:
-          relayConfig.openaiAdaptiveManualPriorityWeight ?? fallbackOptions.manualPriorityWeight
+          relayConfig.openaiAdaptiveManualPriorityWeight ?? fallbackOptions.manualPriorityWeight,
+        primarySaturationPercent:
+          relayConfig.openaiAdaptivePrimarySaturationPercent ??
+          fallbackOptions.primarySaturationPercent,
+        secondarySaturationPercent:
+          relayConfig.openaiAdaptiveSecondarySaturationPercent ??
+          fallbackOptions.secondarySaturationPercent,
+        primaryHardStopPercent:
+          relayConfig.openaiAdaptivePrimaryHardStopPercent ??
+          fallbackOptions.primaryHardStopPercent,
+        secondaryHardStopPercent:
+          relayConfig.openaiAdaptiveSecondaryHardStopPercent ??
+          fallbackOptions.secondaryHardStopPercent,
+        hardStopGraceSeconds:
+          relayConfig.openaiAdaptiveHardStopGraceSeconds ?? fallbackOptions.hardStopGraceSeconds,
+        nearCapPenaltyWeight:
+          relayConfig.openaiAdaptiveNearCapPenaltyWeight ?? fallbackOptions.nearCapPenaltyWeight,
+        scheduleDriftPenaltyWeight:
+          relayConfig.openaiAdaptiveScheduleDriftPenaltyWeight ??
+          fallbackOptions.scheduleDriftPenaltyWeight,
+        selectionBandDelta:
+          relayConfig.openaiAdaptiveSelectionBandDelta ?? fallbackOptions.selectionBandDelta
       }
     } catch (error) {
       logger.debug('⚠️ Failed to load adaptive scheduling config, fallback to env defaults:', error)
@@ -80,7 +109,10 @@ class UnifiedOpenAIScheduler {
       return best
     }
 
-    const bandDelta = Math.max(0, this.ADAPTIVE_SELECTION_BAND_DELTA)
+    const configuredBandDelta = Number.isFinite(adaptiveOptions.selectionBandDelta)
+      ? adaptiveOptions.selectionBandDelta
+      : this.ADAPTIVE_SELECTION_BAND_DELTA
+    const bandDelta = Math.max(0, Math.floor(configuredBandDelta))
     if (bandDelta === 0) {
       return best
     }

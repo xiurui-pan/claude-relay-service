@@ -53,7 +53,15 @@ router.put('/claude-relay-config', authenticateAdmin, async (req, res) => {
       openaiAdaptiveCodexUsageMaxAgeMinutes,
       openaiAdaptiveSecondaryWeight,
       openaiAdaptiveResetTimeWeight,
-      openaiAdaptiveManualPriorityWeight
+      openaiAdaptiveManualPriorityWeight,
+      openaiAdaptivePrimarySaturationPercent,
+      openaiAdaptiveSecondarySaturationPercent,
+      openaiAdaptivePrimaryHardStopPercent,
+      openaiAdaptiveSecondaryHardStopPercent,
+      openaiAdaptiveHardStopGraceSeconds,
+      openaiAdaptiveNearCapPenaltyWeight,
+      openaiAdaptiveScheduleDriftPenaltyWeight,
+      openaiAdaptiveSelectionBandDelta
     } = req.body
 
     // 验证输入
@@ -232,6 +240,105 @@ router.put('/claude-relay-config', authenticateAdmin, async (req, res) => {
       }
     }
 
+    if (openaiAdaptivePrimarySaturationPercent !== undefined) {
+      if (
+        !Number.isFinite(openaiAdaptivePrimarySaturationPercent) ||
+        openaiAdaptivePrimarySaturationPercent < 50 ||
+        openaiAdaptivePrimarySaturationPercent > 100
+      ) {
+        return res.status(400).json({
+          error: 'openaiAdaptivePrimarySaturationPercent must be a finite number between 50 and 100'
+        })
+      }
+    }
+
+    if (openaiAdaptiveSecondarySaturationPercent !== undefined) {
+      if (
+        !Number.isFinite(openaiAdaptiveSecondarySaturationPercent) ||
+        openaiAdaptiveSecondarySaturationPercent < 40 ||
+        openaiAdaptiveSecondarySaturationPercent > 100
+      ) {
+        return res.status(400).json({
+          error:
+            'openaiAdaptiveSecondarySaturationPercent must be a finite number between 40 and 100'
+        })
+      }
+    }
+
+    if (openaiAdaptivePrimaryHardStopPercent !== undefined) {
+      if (
+        !Number.isFinite(openaiAdaptivePrimaryHardStopPercent) ||
+        openaiAdaptivePrimaryHardStopPercent < 80 ||
+        openaiAdaptivePrimaryHardStopPercent > 100
+      ) {
+        return res.status(400).json({
+          error: 'openaiAdaptivePrimaryHardStopPercent must be a finite number between 80 and 100'
+        })
+      }
+    }
+
+    if (openaiAdaptiveSecondaryHardStopPercent !== undefined) {
+      if (
+        !Number.isFinite(openaiAdaptiveSecondaryHardStopPercent) ||
+        openaiAdaptiveSecondaryHardStopPercent < 70 ||
+        openaiAdaptiveSecondaryHardStopPercent > 100
+      ) {
+        return res.status(400).json({
+          error: 'openaiAdaptiveSecondaryHardStopPercent must be a finite number between 70 and 100'
+        })
+      }
+    }
+
+    if (openaiAdaptiveHardStopGraceSeconds !== undefined) {
+      if (
+        typeof openaiAdaptiveHardStopGraceSeconds !== 'number' ||
+        !Number.isInteger(openaiAdaptiveHardStopGraceSeconds) ||
+        openaiAdaptiveHardStopGraceSeconds < 0 ||
+        openaiAdaptiveHardStopGraceSeconds > 3600
+      ) {
+        return res.status(400).json({
+          error: 'openaiAdaptiveHardStopGraceSeconds must be an integer between 0 and 3600'
+        })
+      }
+    }
+
+    if (openaiAdaptiveNearCapPenaltyWeight !== undefined) {
+      if (
+        !Number.isFinite(openaiAdaptiveNearCapPenaltyWeight) ||
+        openaiAdaptiveNearCapPenaltyWeight < 0 ||
+        openaiAdaptiveNearCapPenaltyWeight > 1
+      ) {
+        return res.status(400).json({
+          error: 'openaiAdaptiveNearCapPenaltyWeight must be a finite number between 0 and 1'
+        })
+      }
+    }
+
+    if (openaiAdaptiveScheduleDriftPenaltyWeight !== undefined) {
+      if (
+        !Number.isFinite(openaiAdaptiveScheduleDriftPenaltyWeight) ||
+        openaiAdaptiveScheduleDriftPenaltyWeight < 0 ||
+        openaiAdaptiveScheduleDriftPenaltyWeight > 1
+      ) {
+        return res.status(400).json({
+          error: 'openaiAdaptiveScheduleDriftPenaltyWeight must be a finite number between 0 and 1'
+        })
+      }
+    }
+
+    if (openaiAdaptiveSelectionBandDelta !== undefined) {
+      if (
+        typeof openaiAdaptiveSelectionBandDelta !== 'number' ||
+        !Number.isInteger(openaiAdaptiveSelectionBandDelta) ||
+        openaiAdaptiveSelectionBandDelta < 0 ||
+        openaiAdaptiveSelectionBandDelta > 20
+      ) {
+        return res.status(400).json({
+          error: 'openaiAdaptiveSelectionBandDelta must be an integer between 0 and 20'
+        })
+      }
+    }
+
     const updateData = {}
     if (claudeCodeOnlyEnabled !== undefined) {
       updateData.claudeCodeOnlyEnabled = claudeCodeOnlyEnabled
@@ -283,6 +390,30 @@ router.put('/claude-relay-config', authenticateAdmin, async (req, res) => {
     }
     if (openaiAdaptiveManualPriorityWeight !== undefined) {
       updateData.openaiAdaptiveManualPriorityWeight = openaiAdaptiveManualPriorityWeight
+    }
+    if (openaiAdaptivePrimarySaturationPercent !== undefined) {
+      updateData.openaiAdaptivePrimarySaturationPercent = openaiAdaptivePrimarySaturationPercent
+    }
+    if (openaiAdaptiveSecondarySaturationPercent !== undefined) {
+      updateData.openaiAdaptiveSecondarySaturationPercent = openaiAdaptiveSecondarySaturationPercent
+    }
+    if (openaiAdaptivePrimaryHardStopPercent !== undefined) {
+      updateData.openaiAdaptivePrimaryHardStopPercent = openaiAdaptivePrimaryHardStopPercent
+    }
+    if (openaiAdaptiveSecondaryHardStopPercent !== undefined) {
+      updateData.openaiAdaptiveSecondaryHardStopPercent = openaiAdaptiveSecondaryHardStopPercent
+    }
+    if (openaiAdaptiveHardStopGraceSeconds !== undefined) {
+      updateData.openaiAdaptiveHardStopGraceSeconds = openaiAdaptiveHardStopGraceSeconds
+    }
+    if (openaiAdaptiveNearCapPenaltyWeight !== undefined) {
+      updateData.openaiAdaptiveNearCapPenaltyWeight = openaiAdaptiveNearCapPenaltyWeight
+    }
+    if (openaiAdaptiveScheduleDriftPenaltyWeight !== undefined) {
+      updateData.openaiAdaptiveScheduleDriftPenaltyWeight = openaiAdaptiveScheduleDriftPenaltyWeight
+    }
+    if (openaiAdaptiveSelectionBandDelta !== undefined) {
+      updateData.openaiAdaptiveSelectionBandDelta = openaiAdaptiveSelectionBandDelta
     }
 
     const updatedConfig = await claudeRelayConfigService.updateConfig(
