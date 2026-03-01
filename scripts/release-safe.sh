@@ -11,9 +11,12 @@ BACKUP_ID=""
 BACKUP_DIR=""
 OLD_REF=""
 TARGET_REF=""
+TARGET_CHECKOUT_CMD=""
 SKIP_INSTALL=false
 NO_ROLLBACK=false
 FAILED=false
+ROLLBACK_HELPER_PATH=""
+ROLLBACK_CONFIG_PATH=""
 
 log() {
   printf '[release-safe] %s\n' "$*"
@@ -276,12 +279,22 @@ on_error() {
     exit "${exit_code}"
   fi
 
+  local rollback_script="${ROLLBACK_HELPER_PATH}"
+  if [[ -z "${rollback_script}" || ! -f "${rollback_script}" ]]; then
+    rollback_script="${SCRIPT_DIR}/rollback-safe.sh"
+  fi
+
+  local rollback_config="${ROLLBACK_CONFIG_PATH}"
+  if [[ -z "${rollback_config}" || ! -f "${rollback_config}" ]]; then
+    rollback_config="${CONFIG_FILE}"
+  fi
+
   warn "Triggering automatic rollback (backup=${BACKUP_ID}, ref=${OLD_REF})"
-  if bash "${APP_DIR}/scripts/rollback-safe.sh" \
+  if RELEASE_APP_DIR="${APP_DIR}" bash "${rollback_script}" \
     --backup "${BACKUP_ID}" \
     --ref "${OLD_REF}" \
     --skip-lock \
-    --config "${CONFIG_FILE}" \
+    --config "${rollback_config}" \
     --restore-data "${RESTORE_DATA_ON_ROLLBACK}"; then
     warn "Automatic rollback succeeded"
   else
@@ -373,7 +386,13 @@ log "Target ref: ${TARGET_REF}"
 log "Config: ${CONFIG_FILE}"
 
 if is_true "${PRECHECK_CLEAN_GIT}"; then
-  if [[ -n "$(git -C "${APP_DIR}" status --porcelain)" ]]; then
+  raw_status="$(git -C "${APP_DIR}" status --porcelain)"
+  filtered_status="$(
+    printf '%s\n' "${raw_status}" \
+      | sed -E '/^\?\? backups\//d;/^\?\? nohup\.out$/d' \
+      | sed '/^$/d'
+  )"
+  if [[ -n "${filtered_status}" ]]; then
     die "Git working tree is dirty. Commit/stash changes or set preflightRequireCleanGit=false."
   fi
 fi
@@ -395,9 +414,24 @@ TARGET_RESOLVED_REF="$(
 )"
 [[ -n "${TARGET_RESOLVED_REF}" ]] || die "Unable to resolve target ref: ${TARGET_REF}"
 
+if [[ "${TARGET_REF}" == "${GIT_REMOTE}/"* ]]; then
+  target_branch="${TARGET_REF#${GIT_REMOTE}/}"
+  TARGET_CHECKOUT_CMD="git checkout -B \"${target_branch}\" \"${TARGET_REF}\""
+elif git -C "${APP_DIR}" show-ref --verify --quiet "refs/heads/${TARGET_REF}"; then
+  TARGET_CHECKOUT_CMD="git checkout \"${TARGET_REF}\""
+else
+  TARGET_CHECKOUT_CMD="git checkout \"${TARGET_RESOLVED_REF}\""
+fi
+
 BACKUP_ID="$(date +%Y%m%d-%H%M%S)"
 BACKUP_DIR="${BACKUP_ROOT}/${BACKUP_ID}"
 mkdir -p "${BACKUP_DIR}/env"
+
+ROLLBACK_HELPER_PATH="${BACKUP_DIR}/rollback-safe.sh"
+ROLLBACK_CONFIG_PATH="${BACKUP_DIR}/release.config.json"
+cp "${SCRIPT_DIR}/rollback-safe.sh" "${ROLLBACK_HELPER_PATH}" || true
+chmod +x "${ROLLBACK_HELPER_PATH}" || true
+cp "${CONFIG_FILE}" "${ROLLBACK_CONFIG_PATH}" || true
 
 if [[ -f "${APP_DIR}/.env" ]]; then
   cp "${APP_DIR}/.env" "${BACKUP_DIR}/env/.env"
@@ -415,6 +449,15 @@ write_manifest "${BACKUP_DIR}/manifest.json" "${TARGET_RESOLVED_REF}"
 log "Backup completed: ${BACKUP_DIR}"
 
 if is_service_running; then
+  if [[ "${SKIP_INSTALL}" == "false" && -d "${APP_DIR}/node_modules" ]]; then
+    unwritable_path="$(
+      find "${APP_DIR}/node_modules" -mindepth 1 -maxdepth 2 ! -writable -print -quit 2>/dev/null || true
+    )"
+    if [[ -n "${unwritable_path}" ]]; then
+      die "node_modules has permission issue before deploy: ${unwritable_path}. Fix ownership first (e.g. sudo chown -R $(id -u):$(id -g) node_modules)."
+    fi
+  fi
+
   run_cmd "cd \"${APP_DIR}\" && ${SERVICE_STOP_CMD}" || warn "Service stop command failed, continue with state check"
   if ! wait_for_service_state "stopped" "${SERVICE_STOP_TIMEOUT_SECONDS}"; then
     die "Service did not stop within ${SERVICE_STOP_TIMEOUT_SECONDS}s"
@@ -423,7 +466,7 @@ else
   log "Service already stopped"
 fi
 
-run_cmd "cd \"${APP_DIR}\" && git checkout \"${TARGET_RESOLVED_REF}\""
+run_cmd "cd \"${APP_DIR}\" && ${TARGET_CHECKOUT_CMD}"
 
 if [[ "${SKIP_INSTALL}" == "false" ]]; then
   run_cmd "cd \"${APP_DIR}\" && ${INSTALL_DEPENDENCIES_CMD}"

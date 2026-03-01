@@ -2,7 +2,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-APP_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+APP_DIR="${RELEASE_APP_DIR:-$(cd "${SCRIPT_DIR}/.." && pwd)}"
 CONFIG_FILE="${RELEASE_CONFIG_FILE:-${APP_DIR}/config/release.config.json}"
 
 LOCK_DIR="${APP_DIR}/.release.lock"
