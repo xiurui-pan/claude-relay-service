@@ -144,10 +144,18 @@ class CostCalculator {
 
     // 优先使用动态价格服务
     const pricingData = pricingService.getModelPricing(model)
+    const hasDynamicTokenPrices =
+      !!pricingData &&
+      [
+        pricingData.input_cost_per_token,
+        pricingData.output_cost_per_token,
+        pricingData.cache_creation_input_token_cost,
+        pricingData.cache_read_input_token_cost
+      ].some((value) => value !== undefined && value !== null)
     let pricing
     let usingDynamicPricing = false
 
-    if (pricingData) {
+    if (hasDynamicTokenPrices) {
       // 转换动态价格格式为内部格式
       const inputPrice = (pricingData.input_cost_per_token || 0) * 1000000 // 转换为per 1M tokens
       const outputPrice = (pricingData.output_cost_per_token || 0) * 1000000

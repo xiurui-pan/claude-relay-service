@@ -9,6 +9,7 @@ const openaiAccountService = require('../services/account/openaiAccountService')
 const openaiResponsesAccountService = require('../services/account/openaiResponsesAccountService')
 const openaiResponsesRelayService = require('../services/relay/openaiResponsesRelayService')
 const apiKeyService = require('../services/apiKeyService')
+const modelService = require('../services/modelService')
 const redis = require('../models/redis')
 const crypto = require('crypto')
 const ProxyHelper = require('../utils/proxyHelper')
@@ -880,6 +881,95 @@ router.post('/responses', authenticateApiKey, handleResponses)
 router.post('/v1/responses', authenticateApiKey, handleResponses)
 router.post('/responses/compact', authenticateApiKey, handleResponses)
 router.post('/v1/responses/compact', authenticateApiKey, handleResponses)
+
+// OpenAI 兼容模型列表端点（供 Codex CLI / 通用 OpenAI 客户端发现可用模型）
+router.get('/v1/models', authenticateApiKey, async (req, res) => {
+  try {
+    const apiKeyData = req.apiKey || {}
+
+    if (!checkOpenAIPermissions(apiKeyData)) {
+      return res.status(403).json({
+        error: {
+          message: 'This API key does not have permission to access OpenAI',
+          type: 'permission_denied',
+          code: 'permission_denied'
+        }
+      })
+    }
+
+    let models = modelService.getModelsByProvider('openai')
+
+    // restrictedModels 视为黑名单
+    if (apiKeyData.enableModelRestriction && apiKeyData.restrictedModels?.length > 0) {
+      models = models.filter((model) => !apiKeyData.restrictedModels.includes(model.id))
+    }
+
+    res.json({
+      object: 'list',
+      data: models
+    })
+  } catch (error) {
+    logger.error('Failed to get OpenAI models list:', error)
+    res.status(500).json({
+      error: {
+        message: 'Failed to retrieve models',
+        type: 'api_error'
+      }
+    })
+  }
+})
+
+// OpenAI 兼容模型详情端点
+router.get('/v1/models/:model', authenticateApiKey, async (req, res) => {
+  try {
+    const apiKeyData = req.apiKey || {}
+    const modelId = req.params.model
+
+    if (!checkOpenAIPermissions(apiKeyData)) {
+      return res.status(403).json({
+        error: {
+          message: 'This API key does not have permission to access OpenAI',
+          type: 'permission_denied',
+          code: 'permission_denied'
+        }
+      })
+    }
+
+    // restrictedModels 视为黑名单：命中则返回 404
+    if (apiKeyData.enableModelRestriction && apiKeyData.restrictedModels?.length > 0) {
+      if (apiKeyData.restrictedModels.includes(modelId)) {
+        return res.status(404).json({
+          error: {
+            message: `Model '${modelId}' not found`,
+            type: 'invalid_request_error',
+            code: 'model_not_found'
+          }
+        })
+      }
+    }
+
+    const model = modelService.getModelsByProvider('openai').find((item) => item.id === modelId)
+    if (!model) {
+      return res.status(404).json({
+        error: {
+          message: `Model '${modelId}' not found`,
+          type: 'invalid_request_error',
+          code: 'model_not_found'
+        }
+      })
+    }
+
+    res.json(model)
+  } catch (error) {
+    logger.error('Failed to get OpenAI model detail:', error)
+    res.status(500).json({
+      error: {
+        message: 'Failed to retrieve model details',
+        type: 'api_error'
+      }
+    })
+  }
+})
 
 // 使用情况统计端点
 router.get('/usage', authenticateApiKey, async (req, res) => {
