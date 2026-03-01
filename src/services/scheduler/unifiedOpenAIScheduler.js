@@ -12,6 +12,7 @@ const { sortAccountsWithAdaptivePriority } = require('./openaiAdaptivePrioritySc
 class UnifiedOpenAIScheduler {
   constructor() {
     this.SESSION_MAPPING_PREFIX = 'unified_openai_session_mapping:'
+    this.ADAPTIVE_SELECTION_BAND_DELTA = 3
   }
 
   async _getAdaptiveSchedulingOptions() {
@@ -47,9 +48,7 @@ class UnifiedOpenAIScheduler {
     }
   }
 
-  async _sortAccountsForSelection(availableAccounts, scenario = 'shared_pool') {
-    const adaptiveOptions = await this._getAdaptiveSchedulingOptions()
-
+  _sortAccountsForSelection(availableAccounts, adaptiveOptions, scenario = 'shared_pool') {
     if (!adaptiveOptions.enabled) {
       return sortAccountsByPriority(availableAccounts)
     }
@@ -64,6 +63,56 @@ class UnifiedOpenAIScheduler {
       )
     }
     return sortedAccounts
+  }
+
+  _pickAccountFromAdaptiveBand(sortedAccounts, adaptiveOptions, scenario = 'shared_pool') {
+    if (!sortedAccounts.length) {
+      return null
+    }
+
+    if (!adaptiveOptions.enabled) {
+      return sortedAccounts[0]
+    }
+
+    const best = sortedAccounts[0]
+    const bestPriority = best.__adaptiveScheduling?.priority
+    if (!Number.isFinite(bestPriority)) {
+      return best
+    }
+
+    const bandDelta = Math.max(0, this.ADAPTIVE_SELECTION_BAND_DELTA)
+    if (bandDelta === 0) {
+      return best
+    }
+
+    const candidates = sortedAccounts.filter((account) => {
+      const candidatePriority = account.__adaptiveScheduling?.priority
+      return Number.isFinite(candidatePriority) && candidatePriority <= bestPriority + bandDelta
+    })
+
+    if (candidates.length <= 1) {
+      return best
+    }
+
+    const byLeastRecentlyUsed = [...candidates].sort((a, b) => {
+      const lastUsedA = a.lastUsedAt ? new Date(a.lastUsedAt).getTime() : 0
+      const lastUsedB = b.lastUsedAt ? new Date(b.lastUsedAt).getTime() : 0
+      if (lastUsedA !== lastUsedB) {
+        return lastUsedA - lastUsedB
+      }
+      const createdA = a.createdAt ? new Date(a.createdAt).getTime() : 0
+      const createdB = b.createdAt ? new Date(b.createdAt).getTime() : 0
+      return createdA - createdB
+    })
+
+    const selected = byLeastRecentlyUsed[0]
+    if (selected?.accountId !== best.accountId) {
+      logger.debug(
+        `⚖️ OpenAI adaptive band routing (${scenario}) selected ${selected.name || selected.accountId} ` +
+          `from ${candidates.length} candidates (bestPriority=${bestPriority}, band=${bandDelta})`
+      )
+    }
+    return selected
   }
 
   // 🔧 辅助方法：检查账户是否被限流（兼容字符串和对象格式）
@@ -373,10 +422,19 @@ class UnifiedOpenAIScheduler {
       }
 
       // 按优先级和最后使用时间排序（与 Claude/Gemini 调度保持一致）
-      const sortedAccounts = await this._sortAccountsForSelection(availableAccounts, 'shared_pool')
+      const adaptiveOptions = await this._getAdaptiveSchedulingOptions()
+      const sortedAccounts = this._sortAccountsForSelection(
+        availableAccounts,
+        adaptiveOptions,
+        'shared_pool'
+      )
 
-      // 选择第一个账户
-      const selectedAccount = sortedAccounts[0]
+      // 选择账户（自适应模式下启用小带宽分流，避免把单账户瞬时打爆）
+      const selectedAccount = this._pickAccountFromAdaptiveBand(
+        sortedAccounts,
+        adaptiveOptions,
+        'shared_pool'
+      )
       const selectedPriority =
         selectedAccount.__adaptiveScheduling?.priority || selectedAccount.priority || 50
 
@@ -1007,13 +1065,18 @@ class UnifiedOpenAIScheduler {
       }
 
       // 按优先级和最后使用时间排序（与 Claude/Gemini 调度保持一致）
-      const sortedAccounts = await this._sortAccountsForSelection(
+      const adaptiveOptions = await this._getAdaptiveSchedulingOptions()
+      const sortedAccounts = this._sortAccountsForSelection(
         availableAccounts,
+        adaptiveOptions,
         `group:${groupId}`
       )
 
-      // 选择第一个账户
-      const selectedAccount = sortedAccounts[0]
+      const selectedAccount = this._pickAccountFromAdaptiveBand(
+        sortedAccounts,
+        adaptiveOptions,
+        `group:${groupId}`
+      )
       const selectedPriority =
         selectedAccount.__adaptiveScheduling?.priority || selectedAccount.priority || 50
 

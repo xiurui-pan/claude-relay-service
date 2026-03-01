@@ -103,4 +103,46 @@ describe('openaiAdaptivePriorityScorer', () => {
     expect(result.reason).toBe('missing_codex_usage')
     expect(result.priority).toBe(12)
   })
+
+  it('should fallback to static priority when codex usage timestamp is missing', () => {
+    const result = buildAdaptivePriority({
+      accountType: 'openai',
+      priority: 22,
+      codexUsage: {
+        primary: { usedPercent: 20, remainingSeconds: 1000, windowMinutes: 300 }
+      }
+    })
+
+    expect(result.applied).toBe(false)
+    expect(result.reason).toBe('missing_codex_usage_timestamp')
+    expect(result.priority).toBe(22)
+  })
+
+  it('should heavily penalize account that is close to hard stop', () => {
+    const now = new Date().toISOString()
+    const riskHigh = buildAdaptivePriority({
+      accountType: 'openai',
+      priority: 50,
+      codexUsage: {
+        updatedAt: now,
+        primary: { usedPercent: 99, remainingSeconds: 3600, windowMinutes: 300 },
+        secondary: { usedPercent: 97, remainingSeconds: 80000, windowMinutes: 10080 }
+      }
+    })
+
+    const safer = buildAdaptivePriority({
+      accountType: 'openai',
+      priority: 50,
+      codexUsage: {
+        updatedAt: now,
+        primary: { usedPercent: 55, remainingSeconds: 7200, windowMinutes: 300 },
+        secondary: { usedPercent: 45, remainingSeconds: 360000, windowMinutes: 10080 }
+      }
+    })
+
+    expect(riskHigh.applied).toBe(true)
+    expect(safer.applied).toBe(true)
+    expect(riskHigh.priority).toBeGreaterThan(safer.priority)
+    expect(riskHigh.windowScores.primary.hardStopTriggered).toBe(true)
+  })
 })
