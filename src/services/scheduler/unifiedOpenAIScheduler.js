@@ -5,10 +5,43 @@ const redis = require('../../models/redis')
 const logger = require('../../utils/logger')
 const { isSchedulable, sortAccountsByPriority } = require('../../utils/commonHelper')
 const upstreamErrorHelper = require('../../utils/upstreamErrorHelper')
+const appConfig = require('../../../config/config')
+const { sortAccountsWithAdaptivePriority } = require('./openaiAdaptivePriorityScorer')
 
 class UnifiedOpenAIScheduler {
   constructor() {
     this.SESSION_MAPPING_PREFIX = 'unified_openai_session_mapping:'
+  }
+
+  _getAdaptiveSchedulingOptions() {
+    const adaptiveConfig = appConfig.openaiScheduling || {}
+    return {
+      enabled: adaptiveConfig.adaptivePriorityEnabled !== false,
+      includeResponses: adaptiveConfig.includeResponsesInAdaptivePool === true,
+      codexUsageMaxAgeMinutes: adaptiveConfig.codexUsageMaxAgeMinutes,
+      secondaryWeight: adaptiveConfig.secondaryWeight,
+      resetTimeWeight: adaptiveConfig.resetTimeWeight,
+      manualPriorityWeight: adaptiveConfig.manualPriorityWeight
+    }
+  }
+
+  _sortAccountsForSelection(availableAccounts, scenario = 'shared_pool') {
+    const adaptiveOptions = this._getAdaptiveSchedulingOptions()
+
+    if (!adaptiveOptions.enabled) {
+      return sortAccountsByPriority(availableAccounts)
+    }
+
+    const sortedAccounts = sortAccountsWithAdaptivePriority(availableAccounts, adaptiveOptions)
+    const selectedAdaptiveMeta = sortedAccounts[0]?.__adaptiveScheduling
+    if (selectedAdaptiveMeta?.applied) {
+      logger.debug(
+        `⚖️ OpenAI adaptive scheduling (${scenario}) selected dynamic priority ${selectedAdaptiveMeta.priority} ` +
+          `(manual=${selectedAdaptiveMeta.staticPriority}, auto=${selectedAdaptiveMeta.autoPriority}, ` +
+          `availability=${(selectedAdaptiveMeta.overallAvailability * 100).toFixed(1)}%)`
+      )
+    }
+    return sortedAccounts
   }
 
   // 🔧 辅助方法：检查账户是否被限流（兼容字符串和对象格式）
@@ -318,10 +351,12 @@ class UnifiedOpenAIScheduler {
       }
 
       // 按优先级和最后使用时间排序（与 Claude/Gemini 调度保持一致）
-      const sortedAccounts = sortAccountsByPriority(availableAccounts)
+      const sortedAccounts = this._sortAccountsForSelection(availableAccounts, 'shared_pool')
 
       // 选择第一个账户
       const selectedAccount = sortedAccounts[0]
+      const selectedPriority =
+        selectedAccount.__adaptiveScheduling?.priority || selectedAccount.priority || 50
 
       // 如果有会话哈希，建立新的映射
       if (sessionHash) {
@@ -336,7 +371,7 @@ class UnifiedOpenAIScheduler {
       }
 
       logger.info(
-        `🎯 Selected account: ${selectedAccount.name} (${selectedAccount.accountId}, ${selectedAccount.accountType}, priority: ${selectedAccount.priority || 50}) for API key ${apiKeyData.name}`
+        `🎯 Selected account: ${selectedAccount.name} (${selectedAccount.accountId}, ${selectedAccount.accountType}, priority: ${selectedPriority}) for API key ${apiKeyData.name}`
       )
 
       // 更新账户的最后使用时间
@@ -623,7 +658,6 @@ class UnifiedOpenAIScheduler {
     const client = redis.getClientSafe()
     const mappingData = JSON.stringify({ accountId, accountType })
     // 依据配置设置TTL（小时）
-    const appConfig = require('../../../config/config')
     const ttlHours = appConfig.session?.stickyTtlHours || 1
     const ttlSeconds = Math.max(1, Math.floor(ttlHours * 60 * 60))
     await client.setex(`${this.SESSION_MAPPING_PREFIX}${sessionHash}`, ttlSeconds, mappingData)
@@ -649,7 +683,6 @@ class UnifiedOpenAIScheduler {
         return true
       }
 
-      const appConfig = require('../../../config/config')
       const ttlHours = appConfig.session?.stickyTtlHours || 1
       const renewalThresholdMinutes = appConfig.session?.renewalThresholdMinutes || 0
       if (!renewalThresholdMinutes) {
@@ -952,10 +985,12 @@ class UnifiedOpenAIScheduler {
       }
 
       // 按优先级和最后使用时间排序（与 Claude/Gemini 调度保持一致）
-      const sortedAccounts = sortAccountsByPriority(availableAccounts)
+      const sortedAccounts = this._sortAccountsForSelection(availableAccounts, `group:${groupId}`)
 
       // 选择第一个账户
       const selectedAccount = sortedAccounts[0]
+      const selectedPriority =
+        selectedAccount.__adaptiveScheduling?.priority || selectedAccount.priority || 50
 
       // 如果有会话哈希，建立新的映射
       if (sessionHash) {
@@ -970,7 +1005,7 @@ class UnifiedOpenAIScheduler {
       }
 
       logger.info(
-        `🎯 Selected account from group: ${selectedAccount.name} (${selectedAccount.accountId}, ${selectedAccount.accountType}, priority: ${selectedAccount.priority || 50})`
+        `🎯 Selected account from group: ${selectedAccount.name} (${selectedAccount.accountId}, ${selectedAccount.accountType}, priority: ${selectedPriority})`
       )
 
       // 更新账户的最后使用时间
