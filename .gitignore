@@ -27,6 +27,7 @@ redis_data/
 # Logs directory
 logs/
 logs1/
+nohup.out
 *.log
 startup.log
 app.log

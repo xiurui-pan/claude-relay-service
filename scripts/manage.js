@@ -194,8 +194,23 @@ class ServiceManager {
     return true
   }
 
-  status() {
+  status(options = {}) {
+    const { json = false } = options
     const status = this.getStatus()
+    const payload = {
+      running: status.running,
+      pid: status.pid,
+      pidFile: PID_FILE,
+      logFile: LOG_FILE,
+      errorLogFile: ERROR_LOG_FILE,
+      checkedAt: new Date().toISOString()
+    }
+
+    if (json) {
+      process.stdout.write(`${JSON.stringify(payload)}\n`)
+      return status.running
+    }
+
     if (status.running) {
       console.log(`✅ 服务正在运行 (PID: ${status.pid})`)
 
@@ -239,7 +254,7 @@ class ServiceManager {
   start [-d|--daemon]   启动服务 (-d: 后台运行)
   stop                  停止服务
   restart [-d|--daemon] 重启服务 (-d: 后台运行)
-  status                查看服务状态
+  status [--json]       查看服务状态
   logs [lines]          查看日志 (默认50行)
   help                  显示帮助信息
 
@@ -272,6 +287,7 @@ class ServiceManager {
   node scripts/manage.js start -d    # 后台启动
   node scripts/manage.js restart -d  # 后台重启
   node scripts/manage.js status      # 查看状态
+  node scripts/manage.js status --json  # JSON 状态输出
   node scripts/manage.js logs 100    # 查看最近100行日志
 
 文件位置:
@@ -288,23 +304,25 @@ function main() {
   const args = process.argv.slice(2)
   const command = args[0]
   const isDaemon = args.includes('-d') || args.includes('--daemon')
+  const asJson = args.includes('--json')
+  let succeeded = true
 
   switch (command) {
     case 'start':
     case 's':
-      manager.start(isDaemon)
+      succeeded = manager.start(isDaemon)
       break
     case 'stop':
     case 'halt':
-      manager.stop()
+      succeeded = manager.stop()
       break
     case 'restart':
     case 'r':
-      manager.restart(isDaemon)
+      succeeded = manager.restart(isDaemon)
       break
     case 'status':
     case 'st':
-      manager.status()
+      succeeded = manager.status({ json: asJson })
       break
     case 'logs':
     case 'log':
@@ -323,6 +341,10 @@ function main() {
       console.log('❌ 未知命令:', command)
       manager.help()
       process.exit(1)
+  }
+
+  if (!succeeded) {
+    process.exit(1)
   }
 }
 

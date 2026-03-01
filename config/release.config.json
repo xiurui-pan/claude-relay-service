@@ -1,0 +1,21 @@
+{
+  "defaultReleaseRef": "main",
+  "gitRemote": "origin",
+  "preflightRequireCleanGit": true,
+  "healthUrl": "http://127.0.0.1:3000/health",
+  "healthTimeoutSeconds": 60,
+  "healthIntervalSeconds": 2,
+  "serviceStopTimeoutSeconds": 45,
+  "serviceStartTimeoutSeconds": 45,
+  "backupRoot": "/home/pxr/claude-relay-service/backups/releases",
+  "retainBackups": 7,
+  "redisDataPath": "/var/lib/redis",
+  "requireRedisBackup": true,
+  "redisRdbBackupCmd": "redis-cli -h localhost -p 6379 --rdb \"__OUTPUT__\"",
+  "restoreDataOnRollback": false,
+  "serviceStartCmd": "npm run service:start:daemon",
+  "serviceStopCmd": "npm run service:stop",
+  "serviceStatusCmd": "node scripts/manage.js status --json",
+  "installDependenciesCmd": "npm ci",
+  "autoRollback": true
+}
