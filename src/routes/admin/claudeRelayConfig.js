@@ -47,7 +47,13 @@ router.put('/claude-relay-config', authenticateAdmin, async (req, res) => {
       concurrentRequestQueueEnabled,
       concurrentRequestQueueMaxSize,
       concurrentRequestQueueMaxSizeMultiplier,
-      concurrentRequestQueueTimeoutMs
+      concurrentRequestQueueTimeoutMs,
+      openaiAdaptivePriorityEnabled,
+      openaiAdaptiveIncludeResponses,
+      openaiAdaptiveCodexUsageMaxAgeMinutes,
+      openaiAdaptiveSecondaryWeight,
+      openaiAdaptiveResetTimeWeight,
+      openaiAdaptiveManualPriorityWeight
     } = req.body
 
     // 验证输入
@@ -162,6 +168,70 @@ router.put('/claude-relay-config', authenticateAdmin, async (req, res) => {
       }
     }
 
+    // 验证 OpenAI 自适应调度配置
+    if (
+      openaiAdaptivePriorityEnabled !== undefined &&
+      typeof openaiAdaptivePriorityEnabled !== 'boolean'
+    ) {
+      return res.status(400).json({ error: 'openaiAdaptivePriorityEnabled must be a boolean' })
+    }
+
+    if (
+      openaiAdaptiveIncludeResponses !== undefined &&
+      typeof openaiAdaptiveIncludeResponses !== 'boolean'
+    ) {
+      return res.status(400).json({ error: 'openaiAdaptiveIncludeResponses must be a boolean' })
+    }
+
+    if (openaiAdaptiveCodexUsageMaxAgeMinutes !== undefined) {
+      if (
+        typeof openaiAdaptiveCodexUsageMaxAgeMinutes !== 'number' ||
+        !Number.isInteger(openaiAdaptiveCodexUsageMaxAgeMinutes) ||
+        openaiAdaptiveCodexUsageMaxAgeMinutes < 5 ||
+        openaiAdaptiveCodexUsageMaxAgeMinutes > 10080
+      ) {
+        return res.status(400).json({
+          error: 'openaiAdaptiveCodexUsageMaxAgeMinutes must be an integer between 5 and 10080'
+        })
+      }
+    }
+
+    if (openaiAdaptiveSecondaryWeight !== undefined) {
+      if (
+        !Number.isFinite(openaiAdaptiveSecondaryWeight) ||
+        openaiAdaptiveSecondaryWeight < 0 ||
+        openaiAdaptiveSecondaryWeight > 1
+      ) {
+        return res.status(400).json({
+          error: 'openaiAdaptiveSecondaryWeight must be a finite number between 0 and 1'
+        })
+      }
+    }
+
+    if (openaiAdaptiveResetTimeWeight !== undefined) {
+      if (
+        !Number.isFinite(openaiAdaptiveResetTimeWeight) ||
+        openaiAdaptiveResetTimeWeight < 0 ||
+        openaiAdaptiveResetTimeWeight > 1
+      ) {
+        return res.status(400).json({
+          error: 'openaiAdaptiveResetTimeWeight must be a finite number between 0 and 1'
+        })
+      }
+    }
+
+    if (openaiAdaptiveManualPriorityWeight !== undefined) {
+      if (
+        !Number.isFinite(openaiAdaptiveManualPriorityWeight) ||
+        openaiAdaptiveManualPriorityWeight < 0 ||
+        openaiAdaptiveManualPriorityWeight > 1
+      ) {
+        return res.status(400).json({
+          error: 'openaiAdaptiveManualPriorityWeight must be a finite number between 0 and 1'
+        })
+      }
+    }
+
     const updateData = {}
     if (claudeCodeOnlyEnabled !== undefined) {
       updateData.claudeCodeOnlyEnabled = claudeCodeOnlyEnabled
@@ -195,6 +265,24 @@ router.put('/claude-relay-config', authenticateAdmin, async (req, res) => {
     }
     if (concurrentRequestQueueTimeoutMs !== undefined) {
       updateData.concurrentRequestQueueTimeoutMs = concurrentRequestQueueTimeoutMs
+    }
+    if (openaiAdaptivePriorityEnabled !== undefined) {
+      updateData.openaiAdaptivePriorityEnabled = openaiAdaptivePriorityEnabled
+    }
+    if (openaiAdaptiveIncludeResponses !== undefined) {
+      updateData.openaiAdaptiveIncludeResponses = openaiAdaptiveIncludeResponses
+    }
+    if (openaiAdaptiveCodexUsageMaxAgeMinutes !== undefined) {
+      updateData.openaiAdaptiveCodexUsageMaxAgeMinutes = openaiAdaptiveCodexUsageMaxAgeMinutes
+    }
+    if (openaiAdaptiveSecondaryWeight !== undefined) {
+      updateData.openaiAdaptiveSecondaryWeight = openaiAdaptiveSecondaryWeight
+    }
+    if (openaiAdaptiveResetTimeWeight !== undefined) {
+      updateData.openaiAdaptiveResetTimeWeight = openaiAdaptiveResetTimeWeight
+    }
+    if (openaiAdaptiveManualPriorityWeight !== undefined) {
+      updateData.openaiAdaptiveManualPriorityWeight = openaiAdaptiveManualPriorityWeight
     }
 
     const updatedConfig = await claudeRelayConfigService.updateConfig(

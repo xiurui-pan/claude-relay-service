@@ -6,6 +6,7 @@ const logger = require('../../utils/logger')
 const { isSchedulable, sortAccountsByPriority } = require('../../utils/commonHelper')
 const upstreamErrorHelper = require('../../utils/upstreamErrorHelper')
 const appConfig = require('../../../config/config')
+const claudeRelayConfigService = require('../claudeRelayConfigService')
 const { sortAccountsWithAdaptivePriority } = require('./openaiAdaptivePriorityScorer')
 
 class UnifiedOpenAIScheduler {
@@ -13,9 +14,9 @@ class UnifiedOpenAIScheduler {
     this.SESSION_MAPPING_PREFIX = 'unified_openai_session_mapping:'
   }
 
-  _getAdaptiveSchedulingOptions() {
+  async _getAdaptiveSchedulingOptions() {
     const adaptiveConfig = appConfig.openaiScheduling || {}
-    return {
+    const fallbackOptions = {
       enabled: adaptiveConfig.adaptivePriorityEnabled !== false,
       includeResponses: adaptiveConfig.includeResponsesInAdaptivePool === true,
       codexUsageMaxAgeMinutes: adaptiveConfig.codexUsageMaxAgeMinutes,
@@ -23,10 +24,31 @@ class UnifiedOpenAIScheduler {
       resetTimeWeight: adaptiveConfig.resetTimeWeight,
       manualPriorityWeight: adaptiveConfig.manualPriorityWeight
     }
+
+    try {
+      const relayConfig = await claudeRelayConfigService.getConfig()
+      return {
+        enabled: relayConfig.openaiAdaptivePriorityEnabled ?? fallbackOptions.enabled,
+        includeResponses:
+          relayConfig.openaiAdaptiveIncludeResponses ?? fallbackOptions.includeResponses,
+        codexUsageMaxAgeMinutes:
+          relayConfig.openaiAdaptiveCodexUsageMaxAgeMinutes ??
+          fallbackOptions.codexUsageMaxAgeMinutes,
+        secondaryWeight:
+          relayConfig.openaiAdaptiveSecondaryWeight ?? fallbackOptions.secondaryWeight,
+        resetTimeWeight:
+          relayConfig.openaiAdaptiveResetTimeWeight ?? fallbackOptions.resetTimeWeight,
+        manualPriorityWeight:
+          relayConfig.openaiAdaptiveManualPriorityWeight ?? fallbackOptions.manualPriorityWeight
+      }
+    } catch (error) {
+      logger.debug('⚠️ Failed to load adaptive scheduling config, fallback to env defaults:', error)
+      return fallbackOptions
+    }
   }
 
-  _sortAccountsForSelection(availableAccounts, scenario = 'shared_pool') {
-    const adaptiveOptions = this._getAdaptiveSchedulingOptions()
+  async _sortAccountsForSelection(availableAccounts, scenario = 'shared_pool') {
+    const adaptiveOptions = await this._getAdaptiveSchedulingOptions()
 
     if (!adaptiveOptions.enabled) {
       return sortAccountsByPriority(availableAccounts)
@@ -351,7 +373,7 @@ class UnifiedOpenAIScheduler {
       }
 
       // 按优先级和最后使用时间排序（与 Claude/Gemini 调度保持一致）
-      const sortedAccounts = this._sortAccountsForSelection(availableAccounts, 'shared_pool')
+      const sortedAccounts = await this._sortAccountsForSelection(availableAccounts, 'shared_pool')
 
       // 选择第一个账户
       const selectedAccount = sortedAccounts[0]
@@ -985,7 +1007,10 @@ class UnifiedOpenAIScheduler {
       }
 
       // 按优先级和最后使用时间排序（与 Claude/Gemini 调度保持一致）
-      const sortedAccounts = this._sortAccountsForSelection(availableAccounts, `group:${groupId}`)
+      const sortedAccounts = await this._sortAccountsForSelection(
+        availableAccounts,
+        `group:${groupId}`
+      )
 
       // 选择第一个账户
       const selectedAccount = sortedAccounts[0]

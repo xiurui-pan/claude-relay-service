@@ -5,6 +5,7 @@
 
 const redis = require('../models/redis')
 const logger = require('../utils/logger')
+const appConfig = require('../../config/config')
 
 const CONFIG_KEY = 'claude_relay_config'
 const SESSION_BINDING_PREFIX = 'original_session_binding:'
@@ -29,6 +30,14 @@ const DEFAULT_CONFIG = {
   // 排队健康检查配置
   concurrentRequestQueueHealthCheckEnabled: true, // 是否启用排队健康检查（默认开启）
   concurrentRequestQueueHealthThreshold: 0.8, // 健康检查阈值（P90 >= 超时 × 阈值时拒绝新请求）
+  // OpenAI 自适应调度配置
+  openaiAdaptivePriorityEnabled: appConfig.openaiScheduling?.adaptivePriorityEnabled !== false,
+  openaiAdaptiveIncludeResponses:
+    appConfig.openaiScheduling?.includeResponsesInAdaptivePool === true,
+  openaiAdaptiveCodexUsageMaxAgeMinutes: appConfig.openaiScheduling?.codexUsageMaxAgeMinutes || 720,
+  openaiAdaptiveSecondaryWeight: appConfig.openaiScheduling?.secondaryWeight ?? 0.45,
+  openaiAdaptiveResetTimeWeight: appConfig.openaiScheduling?.resetTimeWeight ?? 0.25,
+  openaiAdaptiveManualPriorityWeight: appConfig.openaiScheduling?.manualPriorityWeight ?? 0.1,
   updatedAt: null,
   updatedBy: null
 }
@@ -115,7 +124,8 @@ class ClaudeRelayConfigService {
       logger.info(`✅ Claude relay config updated by ${updatedBy}:`, {
         claudeCodeOnlyEnabled: updatedConfig.claudeCodeOnlyEnabled,
         globalSessionBindingEnabled: updatedConfig.globalSessionBindingEnabled,
-        concurrentRequestQueueEnabled: updatedConfig.concurrentRequestQueueEnabled
+        concurrentRequestQueueEnabled: updatedConfig.concurrentRequestQueueEnabled,
+        openaiAdaptivePriorityEnabled: updatedConfig.openaiAdaptivePriorityEnabled
       })
 
       return updatedConfig
