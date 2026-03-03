@@ -1494,11 +1494,16 @@ class ClaudeRelayService {
     const contentLength = Buffer.byteLength(bodyString, 'utf8')
 
     // 构建最终请求头（包含认证、版本、User-Agent、Beta 等）
+    // Force identity encoding to prevent upstream (Cloudflare) from returning
+    // gzip-compressed responses without a Content-Encoding header, which causes
+    // binary data to be silently corrupted by UTF-8 text decoding in the stream
+    // handler. See: https://github.com/Wei-Shaw/claude-relay-service/issues/1030
     const headers = {
       host: 'api.anthropic.com',
       connection: 'keep-alive',
       'content-type': 'application/json',
       'content-length': String(contentLength),
+      'accept-encoding': 'identity',
       authorization: `Bearer ${accessToken}`,
       'anthropic-version': this.apiVersion,
       ...finalHeaders
@@ -2386,7 +2391,28 @@ class ClaudeRelayService {
         const requestedModel = body?.model || 'unknown'
         const { isRealClaudeCodeRequest } = requestOptions
 
-        res.on('data', (chunk) => {
+        // 🔧 处理上游 gzip/deflate 压缩：Anthropic (经 Cloudflare) 可能返回压缩响应
+        const upstreamEncoding = res.headers['content-encoding']
+        let dataSource = res
+        if (upstreamEncoding === 'gzip') {
+          dataSource = res.pipe(zlib.createGunzip())
+          dataSource.on('error', (err) => {
+            logger.error('❌ Gzip decompression error in stream:', err.message)
+            if (isStreamWritable(responseStream)) {
+              responseStream.end()
+            }
+          })
+        } else if (upstreamEncoding === 'deflate') {
+          dataSource = res.pipe(zlib.createInflate())
+          dataSource.on('error', (err) => {
+            logger.error('❌ Deflate decompression error in stream:', err.message)
+            if (isStreamWritable(responseStream)) {
+              responseStream.end()
+            }
+          })
+        }
+
+        dataSource.on('data', (chunk) => {
           try {
             const chunkStr = chunk.toString()
 
@@ -2531,7 +2557,7 @@ class ClaudeRelayService {
           }
         })
 
-        res.on('end', async () => {
+        dataSource.on('end', async () => {
           try {
             // 处理缓冲区中剩余的数据
             if (buffer.trim() && isStreamWritable(responseStream)) {
@@ -2860,13 +2886,14 @@ class ClaudeRelayService {
         `⏱️ ${prefix}${isTimeout ? 'Timeout' : 'Server'} error for account ${accountId}, error count: ${errorCount}/${threshold}`
       )
 
-      // 标记账户为临时不可用（5分钟）
+      // 标记账户为临时不可用（TTL 由 upstreamError 配置决定）
       try {
         await unifiedClaudeScheduler.markAccountTemporarilyUnavailable(
           accountId,
           accountType,
           sessionHash,
-          300
+          null,
+          statusCode
         )
       } catch (markError) {
         logger.error(`❌ Failed to mark account temporarily unavailable: ${accountId}`, markError)
