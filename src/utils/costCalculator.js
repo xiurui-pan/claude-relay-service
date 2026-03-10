@@ -82,7 +82,7 @@ class CostCalculator {
    * @param {string} model - 模型名称
    * @returns {Object} 费用详情
    */
-  static calculateCost(usage, model = 'unknown') {
+  static calculateCost(usage, model = 'unknown', serviceTier = null) {
     // 如果 usage 包含详细的 cache_creation 对象或是 1M 模型，使用 pricingService 来处理
     if (
       (usage.cache_creation && typeof usage.cache_creation === 'object') ||
@@ -144,22 +144,26 @@ class CostCalculator {
 
     // 优先使用动态价格服务
     const pricingData = pricingService.getModelPricing(model)
-    const hasDynamicTokenPrices =
-      !!pricingData &&
-      [
-        pricingData.input_cost_per_token,
-        pricingData.output_cost_per_token,
-        pricingData.cache_creation_input_token_cost,
-        pricingData.cache_read_input_token_cost
-      ].some((value) => value !== undefined && value !== null)
     let pricing
     let usingDynamicPricing = false
 
-    if (hasDynamicTokenPrices) {
-      // 转换动态价格格式为内部格式
-      const inputPrice = (pricingData.input_cost_per_token || 0) * 1000000 // 转换为per 1M tokens
-      const outputPrice = (pricingData.output_cost_per_token || 0) * 1000000
-      const cacheReadPrice = (pricingData.cache_read_input_token_cost || 0) * 1000000
+    if (pricingData) {
+      // 检查是否使用 priority 定价
+      const usePriority = serviceTier === 'priority' && pricingData.supports_service_tier
+
+      // 转换动态价格格式为内部格式（priority 定价时使用 *_priority 字段，回退到标准价格）
+      const inputPrice =
+        ((usePriority && pricingData.input_cost_per_token_priority) ||
+          pricingData.input_cost_per_token ||
+          0) * 1000000
+      const outputPrice =
+        ((usePriority && pricingData.output_cost_per_token_priority) ||
+          pricingData.output_cost_per_token ||
+          0) * 1000000
+      const cacheReadPrice =
+        ((usePriority && pricingData.cache_read_input_token_cost_priority) ||
+          pricingData.cache_read_input_token_cost ||
+          0) * 1000000
 
       // OpenAI 模型的特殊处理：
       // - 如果没有 cache_creation_input_token_cost，缓存创建按普通 input 价格计费
@@ -245,6 +249,16 @@ class CostCalculator {
         aggregatedUsage.cacheCreateTokens || aggregatedUsage.totalCacheCreateTokens || 0,
       cache_read_input_tokens:
         aggregatedUsage.cacheReadTokens || aggregatedUsage.totalCacheReadTokens || 0
+    }
+
+    // 如果有 ephemeral 拆分数据，构建 cache_creation 子对象
+    const eph5m = aggregatedUsage.ephemeral5mTokens || aggregatedUsage.totalEphemeral5mTokens || 0
+    const eph1h = aggregatedUsage.ephemeral1hTokens || aggregatedUsage.totalEphemeral1hTokens || 0
+    if (eph5m > 0 || eph1h > 0) {
+      usage.cache_creation = {
+        ephemeral_5m_input_tokens: eph5m,
+        ephemeral_1h_input_tokens: eph1h
+      }
     }
 
     return this.calculateCost(usage, model)
