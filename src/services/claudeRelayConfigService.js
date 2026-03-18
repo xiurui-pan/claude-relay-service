@@ -5,7 +5,7 @@
 
 const redis = require('../models/redis')
 const logger = require('../utils/logger')
-const appConfig = require('../../config/config')
+const metadataUserIdHelper = require('../utils/metadataUserIdHelper')
 
 const CONFIG_KEY = 'claude_relay_config'
 const SESSION_BINDING_PREFIX = 'original_session_binding:'
@@ -30,26 +30,6 @@ const DEFAULT_CONFIG = {
   // 排队健康检查配置
   concurrentRequestQueueHealthCheckEnabled: true, // 是否启用排队健康检查（默认开启）
   concurrentRequestQueueHealthThreshold: 0.8, // 健康检查阈值（P90 >= 超时 × 阈值时拒绝新请求）
-  // OpenAI 自适应调度配置
-  openaiAdaptivePriorityEnabled: appConfig.openaiScheduling?.adaptivePriorityEnabled !== false,
-  openaiAdaptiveIncludeResponses:
-    appConfig.openaiScheduling?.includeResponsesInAdaptivePool === true,
-  openaiAdaptiveCodexUsageMaxAgeMinutes: appConfig.openaiScheduling?.codexUsageMaxAgeMinutes || 720,
-  openaiAdaptiveSecondaryWeight: appConfig.openaiScheduling?.secondaryWeight ?? 0.45,
-  openaiAdaptiveResetTimeWeight: appConfig.openaiScheduling?.resetTimeWeight ?? 0.25,
-  openaiAdaptiveManualPriorityWeight: appConfig.openaiScheduling?.manualPriorityWeight ?? 0.1,
-  openaiAdaptivePrimarySaturationPercent:
-    appConfig.openaiScheduling?.primarySaturationPercent ?? 88,
-  openaiAdaptiveSecondarySaturationPercent:
-    appConfig.openaiScheduling?.secondarySaturationPercent ?? 82,
-  openaiAdaptivePrimaryHardStopPercent: appConfig.openaiScheduling?.primaryHardStopPercent ?? 98,
-  openaiAdaptiveSecondaryHardStopPercent:
-    appConfig.openaiScheduling?.secondaryHardStopPercent ?? 96,
-  openaiAdaptiveHardStopGraceSeconds: appConfig.openaiScheduling?.hardStopGraceSeconds ?? 180,
-  openaiAdaptiveNearCapPenaltyWeight: appConfig.openaiScheduling?.nearCapPenaltyWeight ?? 0.65,
-  openaiAdaptiveScheduleDriftPenaltyWeight:
-    appConfig.openaiScheduling?.scheduleDriftPenaltyWeight ?? 0.35,
-  openaiAdaptiveSelectionBandDelta: appConfig.openaiScheduling?.selectionBandDelta ?? 3,
   updatedAt: null,
   updatedBy: null
 }
@@ -62,7 +42,6 @@ const CONFIG_CACHE_TTL = 60000 // 1分钟缓存
 class ClaudeRelayConfigService {
   /**
    * 从 metadata.user_id 中提取原始 sessionId
-   * 格式: user_{64位十六进制}_account__session_{uuid}
    * @param {Object} requestBody - 请求体
    * @returns {string|null} 原始 sessionId 或 null
    */
@@ -70,10 +49,7 @@ class ClaudeRelayConfigService {
     if (!requestBody?.metadata?.user_id) {
       return null
     }
-
-    const userId = requestBody.metadata.user_id
-    const match = userId.match(/session_([a-f0-9-]{36})$/i)
-    return match ? match[1] : null
+    return metadataUserIdHelper.extractSessionId(requestBody.metadata.user_id)
   }
 
   /**
@@ -136,8 +112,7 @@ class ClaudeRelayConfigService {
       logger.info(`✅ Claude relay config updated by ${updatedBy}:`, {
         claudeCodeOnlyEnabled: updatedConfig.claudeCodeOnlyEnabled,
         globalSessionBindingEnabled: updatedConfig.globalSessionBindingEnabled,
-        concurrentRequestQueueEnabled: updatedConfig.concurrentRequestQueueEnabled,
-        openaiAdaptivePriorityEnabled: updatedConfig.openaiAdaptivePriorityEnabled
+        concurrentRequestQueueEnabled: updatedConfig.concurrentRequestQueueEnabled
       })
 
       return updatedConfig
