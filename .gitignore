@@ -27,7 +27,6 @@ redis_data/
 # Logs directory
 logs/
 logs1/
-nohup.out
 *.log
 startup.log
 app.log
@@ -250,4 +249,3 @@ web/apiStats/
 web/admin-spa/dist/
 
 .serena/
-backups/

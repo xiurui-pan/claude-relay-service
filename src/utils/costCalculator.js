@@ -1,4 +1,5 @@
 const pricingService = require('../services/pricingService')
+const logger = require('./logger')
 
 // Claude模型价格配置 (USD per 1M tokens) - 备用定价
 const MODEL_PRICING = {
@@ -89,51 +90,57 @@ class CostCalculator {
       (model && model.includes('[1m]'))
     ) {
       const result = pricingService.calculateCost(usage, model)
-      // 转换 pricingService 返回的格式到 costCalculator 的格式
-      return {
-        model,
-        pricing: {
-          input: result.pricing.input * 1000000, // 转换为 per 1M tokens
-          output: result.pricing.output * 1000000,
-          cacheWrite: result.pricing.cacheCreate * 1000000,
-          cacheRead: result.pricing.cacheRead * 1000000
-        },
-        usingDynamicPricing: true,
-        isLongContextRequest: result.isLongContextRequest || false,
-        usage: {
-          inputTokens: usage.input_tokens || 0,
-          outputTokens: usage.output_tokens || 0,
-          cacheCreateTokens: usage.cache_creation_input_tokens || 0,
-          cacheReadTokens: usage.cache_read_input_tokens || 0,
-          totalTokens:
-            (usage.input_tokens || 0) +
-            (usage.output_tokens || 0) +
-            (usage.cache_creation_input_tokens || 0) +
-            (usage.cache_read_input_tokens || 0)
-        },
-        costs: {
-          input: result.inputCost,
-          output: result.outputCost,
-          cacheWrite: result.cacheCreateCost,
-          cacheRead: result.cacheReadCost,
-          total: result.totalCost
-        },
-        formatted: {
-          input: this.formatCost(result.inputCost),
-          output: this.formatCost(result.outputCost),
-          cacheWrite: this.formatCost(result.cacheCreateCost),
-          cacheRead: this.formatCost(result.cacheReadCost),
-          total: this.formatCost(result.totalCost)
-        },
-        debug: {
-          isOpenAIModel: model.includes('gpt') || model.includes('o1'),
-          hasCacheCreatePrice: !!result.pricing.cacheCreate,
-          cacheCreateTokens: usage.cache_creation_input_tokens || 0,
-          cacheWritePriceUsed: result.pricing.cacheCreate * 1000000,
-          isLongContextModel: model && model.includes('[1m]'),
-          isLongContextRequest: result.isLongContextRequest || false
+      if (result?.hasPricing && result?.pricing) {
+        // 转换 pricingService 返回的格式到 costCalculator 的格式
+        return {
+          model,
+          pricing: {
+            input: result.pricing.input * 1000000, // 转换为 per 1M tokens
+            output: result.pricing.output * 1000000,
+            cacheWrite: result.pricing.cacheCreate * 1000000,
+            cacheRead: result.pricing.cacheRead * 1000000
+          },
+          usingDynamicPricing: true,
+          isLongContextRequest: result.isLongContextRequest || false,
+          usage: {
+            inputTokens: usage.input_tokens || 0,
+            outputTokens: usage.output_tokens || 0,
+            cacheCreateTokens: usage.cache_creation_input_tokens || 0,
+            cacheReadTokens: usage.cache_read_input_tokens || 0,
+            totalTokens:
+              (usage.input_tokens || 0) +
+              (usage.output_tokens || 0) +
+              (usage.cache_creation_input_tokens || 0) +
+              (usage.cache_read_input_tokens || 0)
+          },
+          costs: {
+            input: result.inputCost,
+            output: result.outputCost,
+            cacheWrite: result.cacheCreateCost,
+            cacheRead: result.cacheReadCost,
+            total: result.totalCost
+          },
+          formatted: {
+            input: this.formatCost(result.inputCost),
+            output: this.formatCost(result.outputCost),
+            cacheWrite: this.formatCost(result.cacheCreateCost),
+            cacheRead: this.formatCost(result.cacheReadCost),
+            total: this.formatCost(result.totalCost)
+          },
+          debug: {
+            isOpenAIModel: model.includes('gpt') || model.includes('o1'),
+            hasCacheCreatePrice: !!result.pricing.cacheCreate,
+            cacheCreateTokens: usage.cache_creation_input_tokens || 0,
+            cacheWritePriceUsed: result.pricing.cacheCreate * 1000000,
+            isLongContextModel: model && model.includes('[1m]'),
+            isLongContextRequest: result.isLongContextRequest || false
+          }
         }
       }
+
+      logger.warn(
+        `💰 Dynamic pricing unavailable for ${model}, falling back to legacy cost calculator`
+      )
     }
 
     // 否则使用旧的逻辑（向后兼容）

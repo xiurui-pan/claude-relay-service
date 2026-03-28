@@ -131,7 +131,7 @@
             <div class="flex items-center space-x-2">
               <!-- Usage Stats -->
               <div class="text-right text-xs text-gray-500">
-                <div>{{ formatNumber(apiKey.usage?.requests || 0) }} requests</div>
+                <div>{{ formatNumber(getUsageRequests(apiKey)) }} requests</div>
                 <div v-if="apiKey.usage?.totalCost">${{ apiKey.usage.totalCost.toFixed(4) }}</div>
               </div>
 
@@ -327,4 +327,8 @@ const handleApiKeyCreated = async () => {
 onMounted(() => {
   loadApiKeys()
 })
+
+const getUsageRequests = (apiKey) => {
+  return apiKey?.usage?.total?.requests ?? apiKey?.usage?.requests ?? 0
+}
 </script>

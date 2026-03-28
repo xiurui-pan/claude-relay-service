@@ -351,72 +351,21 @@ class PricingService {
     }
   }
 
-  hasTokenCostFields(pricing) {
-    if (!pricing || typeof pricing !== 'object') {
-      return false
-    }
-
-    const priceFields = [
-      'input_cost_per_token',
-      'output_cost_per_token',
-      'cache_creation_input_token_cost',
-      'cache_read_input_token_cost'
-    ]
-    return priceFields.some((field) => pricing[field] !== undefined && pricing[field] !== null)
-  }
-
-  getAliasCandidates(modelName) {
-    const aliases = {
-      'gpt-5.3-codex': ['gpt-5-codex', 'gpt-5.1-codex', 'gpt-5'],
-      'github_copilot/gpt-5.3-codex': ['gpt-5-codex', 'gpt-5.1-codex', 'gpt-5']
-    }
-
-    const candidates = [...(aliases[modelName] || [])]
-    const modelWithoutProvider = modelName.includes('/') ? modelName.split('/').pop() : null
-    if (modelWithoutProvider && modelWithoutProvider !== modelName) {
-      candidates.unshift(modelWithoutProvider)
-    }
-
-    return [...new Set(candidates)]
-  }
-
   // 获取模型价格信息
   getModelPricing(modelName) {
     if (!this.pricingData || !modelName) {
       return null
     }
 
-    const pickValidPricing = (candidateName, pricing, source) => {
-      if (!pricing) {
-        return null
-      }
-      if (!this.hasTokenCostFields(pricing)) {
-        logger.debug(
-          `💰 Skipping ${source} pricing for ${modelName}: ${candidateName} has no token cost fields`
-        )
-        return null
-      }
-      logger.debug(`💰 Found pricing for ${modelName} using ${source}: ${candidateName}`)
-      return pricing
-    }
-
     // 尝试直接匹配
-    const exactPricing = pickValidPricing(modelName, this.pricingData[modelName], 'exact match')
-    if (exactPricing) {
-      return exactPricing
-    }
-
-    // 特殊别名匹配（避免 provider 变体污染）
-    for (const alias of this.getAliasCandidates(modelName)) {
-      const aliasPricing = pickValidPricing(alias, this.pricingData[alias], 'alias')
-      if (aliasPricing) {
-        return aliasPricing
-      }
+    if (this.pricingData[modelName]) {
+      logger.debug(`💰 Found exact pricing match for ${modelName}`)
+      return this.pricingData[modelName]
     }
 
     // 特殊处理：gpt-5-codex 回退到 gpt-5
     if (modelName === 'gpt-5-codex' && !this.pricingData['gpt-5-codex']) {
-      const fallbackPricing = pickValidPricing('gpt-5', this.pricingData['gpt-5'], 'fallback')
+      const fallbackPricing = this.pricingData['gpt-5']
       if (fallbackPricing) {
         logger.info(`💰 Using gpt-5 pricing as fallback for ${modelName}`)
         return fallbackPricing
@@ -428,13 +377,11 @@ class PricingService {
     if (modelName.includes('.anthropic.') || modelName.includes('.claude')) {
       // 提取不带区域前缀的模型名
       const withoutRegion = modelName.replace(/^(us|eu|apac)\./, '')
-      const withoutRegionPricing = pickValidPricing(
-        withoutRegion,
-        this.pricingData[withoutRegion],
-        'region-stripped match'
-      )
-      if (withoutRegionPricing) {
-        return withoutRegionPricing
+      if (this.pricingData[withoutRegion]) {
+        logger.debug(
+          `💰 Found pricing for ${modelName} by removing region prefix: ${withoutRegion}`
+        )
+        return this.pricingData[withoutRegion]
       }
     }
 
@@ -444,10 +391,6 @@ class PricingService {
     for (const [key, value] of Object.entries(this.pricingData)) {
       const normalizedKey = key.toLowerCase().replace(/[_-]/g, '')
       if (normalizedKey.includes(normalizedModel) || normalizedModel.includes(normalizedKey)) {
-        if (!this.hasTokenCostFields(value)) {
-          logger.debug(`💰 Skipping fuzzy match for ${modelName}: ${key} has no token cost fields`)
-          continue
-        }
         logger.debug(`💰 Found pricing for ${modelName} using fuzzy match: ${key}`)
         return value
       }
@@ -460,12 +403,6 @@ class PricingService {
 
       for (const [key, value] of Object.entries(this.pricingData)) {
         if (key.includes(coreModel) || key.replace('anthropic.', '').includes(coreModel)) {
-          if (!this.hasTokenCostFields(value)) {
-            logger.debug(
-              `💰 Skipping Bedrock core model match for ${modelName}: ${key} has no token cost fields`
-            )
-            continue
-          }
           logger.debug(`💰 Found pricing for ${modelName} using Bedrock core model match: ${key}`)
           return value
         }

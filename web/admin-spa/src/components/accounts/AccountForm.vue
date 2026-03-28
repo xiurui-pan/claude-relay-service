@@ -3918,6 +3918,85 @@
             </div>
           </div>
 
+          <div v-if="isOpenAIEditMode" class="space-y-4">
+            <div
+              class="rounded-lg border border-emerald-200 bg-emerald-50 p-4 dark:border-emerald-700 dark:bg-emerald-900/30"
+            >
+              <div class="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                <div>
+                  <h5 class="mb-2 font-semibold text-emerald-900 dark:text-emerald-200">
+                    OpenAI OAuth 重新授权
+                  </h5>
+                  <p class="text-sm text-emerald-800 dark:text-emerald-300">
+                    可直接复用创建账户时的 OAuth 授权流程，无需手动复制 Access Token。
+                  </p>
+                  <p class="mt-2 text-xs text-emerald-700 dark:text-emerald-400">
+                    重新授权成功后会先回填到当前表单，不会自动保存；点击“更新”后才会正式生效。
+                  </p>
+                </div>
+
+                <div class="flex flex-wrap gap-2">
+                  <button
+                    :class="[
+                      'rounded-lg px-3 py-2 text-sm font-medium transition-colors',
+                      editOpenAIAuthMode === 'manual'
+                        ? 'bg-white text-emerald-700 shadow-sm ring-1 ring-emerald-300 dark:bg-gray-800 dark:text-emerald-300 dark:ring-emerald-700'
+                        : 'bg-emerald-100 text-emerald-700 hover:bg-emerald-200 dark:bg-emerald-900/40 dark:text-emerald-300 dark:hover:bg-emerald-900/60'
+                    ]"
+                    type="button"
+                    @click="switchOpenAIEditAuthMode('manual')"
+                  >
+                    手动更新
+                  </button>
+                  <button
+                    :class="[
+                      'rounded-lg px-3 py-2 text-sm font-medium transition-colors',
+                      editOpenAIAuthMode === 'oauth'
+                        ? 'bg-emerald-600 text-white shadow-sm hover:bg-emerald-700'
+                        : 'bg-emerald-100 text-emerald-700 hover:bg-emerald-200 dark:bg-emerald-900/40 dark:text-emerald-300 dark:hover:bg-emerald-900/60'
+                    ]"
+                    type="button"
+                    @click="switchOpenAIEditAuthMode('oauth')"
+                  >
+                    OAuth 重新授权
+                  </button>
+                </div>
+              </div>
+
+              <div
+                v-if="hasPendingOpenAIOAuthChanges"
+                class="mt-4 rounded-lg border border-green-300 bg-green-50 p-3 dark:border-green-700 dark:bg-green-900/30"
+              >
+                <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <p class="text-sm font-medium text-green-800 dark:text-green-200">
+                      已获取新的 OpenAI OAuth 凭证，尚未保存
+                    </p>
+                    <p class="mt-1 text-xs text-green-700 dark:text-green-300">
+                      当前点击“更新”会提交新的 token 和账户信息；如需放弃，可取消本次 OAuth 结果。
+                    </p>
+                  </div>
+                  <button
+                    class="rounded-lg bg-white px-3 py-2 text-sm font-medium text-green-700 ring-1 ring-green-300 transition-colors hover:bg-green-100 dark:bg-gray-800 dark:text-green-300 dark:ring-green-700 dark:hover:bg-gray-700"
+                    type="button"
+                    @click="discardPendingOpenAIOAuthDraft"
+                  >
+                    取消本次 OAuth 结果
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <OAuthFlow
+              v-if="editOpenAIAuthMode === 'oauth'"
+              ref="oauthFlowRef"
+              :platform="form.platform"
+              :proxy="form.proxy"
+              @back="handleOpenAIEditOAuthBack"
+              @success="handleOAuthSuccess"
+            />
+          </div>
+
           <div
             v-if="
               !(isEdit && isEditingDroidApiKey) &&
@@ -3925,7 +4004,8 @@
               form.platform !== 'ccr' &&
               form.platform !== 'bedrock' &&
               form.platform !== 'azure_openai' &&
-              form.platform !== 'openai-responses'
+              form.platform !== 'openai-responses' &&
+              !(isOpenAIEditMode && editOpenAIAuthMode === 'oauth')
             "
             class="rounded-lg border border-amber-200 bg-amber-50 p-4 dark:border-amber-700 dark:bg-amber-900/30"
           >
@@ -3954,6 +4034,7 @@
                   class="form-input w-full resize-none border-gray-300 font-mono text-xs dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200 dark:placeholder-gray-400"
                   placeholder="留空表示不更新..."
                   rows="4"
+                  @input="handleOpenAIManualTokenInput"
                 />
               </div>
 
@@ -3966,6 +4047,7 @@
                   class="form-input w-full resize-none border-gray-300 font-mono text-xs dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200 dark:placeholder-gray-400"
                   placeholder="留空表示不更新..."
                   rows="4"
+                  @input="handleOpenAIManualTokenInput"
                 />
               </div>
             </div>
@@ -4000,7 +4082,7 @@
             </button>
             <button
               class="btn btn-primary flex-1 px-6 py-3 font-semibold"
-              :disabled="loading"
+              :disabled="loading || (isOpenAIEditMode && editOpenAIAuthMode === 'oauth')"
               type="button"
               @click="updateAccount"
             >
@@ -4172,6 +4254,45 @@ const createDefaultProxyState = () => ({
   password: ''
 })
 
+const createOpenAICodexOauthProxyState = () => ({
+  enabled: true,
+  type: 'socks5',
+  host: '127.0.0.1',
+  port: '7890',
+  username: '',
+  password: ''
+})
+
+const isBlankProxyState = (proxyState) => {
+  if (!proxyState) {
+    return true
+  }
+
+  return (
+    !proxyState.enabled &&
+    !proxyState.host &&
+    !proxyState.port &&
+    !proxyState.username &&
+    !proxyState.password &&
+    (proxyState.type || 'socks5') === 'socks5'
+  )
+}
+
+const isOpenAICodexOauthProxyState = (proxyState) => {
+  if (!proxyState) {
+    return false
+  }
+
+  return (
+    proxyState.enabled === true &&
+    (proxyState.type || 'socks5') === 'socks5' &&
+    (proxyState.host || '').trim() === '127.0.0.1' &&
+    String(proxyState.port || '').trim() === '7890' &&
+    !proxyState.username &&
+    !proxyState.password
+  )
+}
+
 const parseProxyResponse = (rawProxy) => {
   if (!rawProxy) {
     return null
@@ -4282,7 +4403,7 @@ const buildProxyPayload = (proxyState) => {
 
 // 初始化代理配置
 const initProxyConfig = () => {
-  return normalizeProxyFormState(props.account?.proxy)
+  return props.account ? normalizeProxyFormState(props.account?.proxy) : createDefaultProxyState()
 }
 
 const toFormCooldownOverrideValue = (value) => {
@@ -4559,6 +4680,49 @@ const errors = ref({
   azureEndpoint: '',
   deploymentName: ''
 })
+
+const editOpenAIAuthMode = ref('manual')
+const pendingOpenAIOAuth = ref(null)
+const pendingOpenAIAccountInfo = ref(null)
+
+const isOpenAIEditMode = computed(() => isEdit.value && props.account?.platform === 'openai')
+const hasPendingOpenAIOAuthChanges = computed(() => !!pendingOpenAIOAuth.value)
+
+const switchOpenAIEditAuthMode = (mode) => {
+  if (!isOpenAIEditMode.value) {
+    return
+  }
+  editOpenAIAuthMode.value = mode
+}
+
+const clearPendingOpenAIOAuthDraft = ({ clearTokenFields = false } = {}) => {
+  pendingOpenAIOAuth.value = null
+  pendingOpenAIAccountInfo.value = null
+
+  if (clearTokenFields) {
+    form.value.accessToken = ''
+    form.value.refreshToken = ''
+  }
+}
+
+const discardPendingOpenAIOAuthDraft = () => {
+  clearPendingOpenAIOAuthDraft({ clearTokenFields: true })
+  editOpenAIAuthMode.value = 'manual'
+  showToast('已取消本次 OAuth 授权结果', 'info')
+}
+
+const handleOpenAIEditOAuthBack = () => {
+  editOpenAIAuthMode.value = 'manual'
+}
+
+const handleOpenAIManualTokenInput = () => {
+  if (!hasPendingOpenAIOAuthChanges.value) {
+    return
+  }
+
+  pendingOpenAIOAuth.value = null
+  pendingOpenAIAccountInfo.value = null
+}
 
 // 计算是否可以进入下一步
 const canProceed = computed(() => {
@@ -5023,6 +5187,34 @@ const handleOAuthSuccess = async (tokenInfoOrList) => {
 
     // 单个 tokenInfo 或其他平台的处理（保持原有逻辑）
     const tokenInfo = Array.isArray(tokenInfoOrList) ? tokenInfoOrList[0] : tokenInfoOrList
+    if (!tokenInfo) {
+      showToast(accountsStore.error || '授权失败，请重试。', 'error')
+      return
+    }
+
+    if (isEdit.value && currentPlatform === 'openai') {
+      const oauthTokens = tokenInfo?.tokens || tokenInfo || {}
+      const normalizedTokens = {
+        idToken: oauthTokens.idToken || oauthTokens.id_token || '',
+        accessToken: oauthTokens.accessToken || oauthTokens.access_token || '',
+        refreshToken: oauthTokens.refreshToken || oauthTokens.refresh_token || '',
+        expires_in: oauthTokens.expires_in || oauthTokens.expiresIn || 3600
+      }
+
+      if (!normalizedTokens.refreshToken) {
+        showToast('授权成功但未返回 Refresh Token，请重新授权后重试。', 'error')
+        return
+      }
+
+      pendingOpenAIOAuth.value = normalizedTokens
+      pendingOpenAIAccountInfo.value = tokenInfo?.accountInfo || null
+      form.value.accessToken = normalizedTokens.accessToken
+      form.value.refreshToken = normalizedTokens.refreshToken
+      editOpenAIAuthMode.value = 'manual'
+
+      showToast('OpenAI OAuth 授权成功，新的凭证已回填到表单，请点击“更新”保存。', 'success')
+      return
+    }
 
     // OAuth模式也需要确保生成客户端ID
     if (
@@ -5703,8 +5895,26 @@ const updateAccount = async () => {
       proxy: proxyPayload
     }
 
+    if (props.account.platform === 'openai' && pendingOpenAIOAuth.value) {
+      data.openaiOauth = pendingOpenAIOAuth.value
+      data.accountInfo = pendingOpenAIAccountInfo.value || undefined
+
+      if (pendingOpenAIOAuth.value.idToken) {
+        data.idToken = pendingOpenAIOAuth.value.idToken
+      }
+      if (pendingOpenAIOAuth.value.accessToken) {
+        data.accessToken = pendingOpenAIOAuth.value.accessToken
+      }
+      if (pendingOpenAIOAuth.value.refreshToken) {
+        data.refreshToken = pendingOpenAIOAuth.value.refreshToken
+      }
+    }
+
     // 只有非空时才更新token
-    if (form.value.accessToken || form.value.refreshToken) {
+    if (
+      (form.value.accessToken || form.value.refreshToken) &&
+      !(props.account.platform === 'openai' && pendingOpenAIOAuth.value)
+    ) {
       const trimmedAccessToken = form.value.accessToken?.trim() || ''
       const trimmedRefreshToken = form.value.refreshToken?.trim() || ''
 
@@ -6186,6 +6396,27 @@ watch(
   }
 )
 
+watch(
+  [() => form.value.platform, () => form.value.addType],
+  ([platform, addType], [oldPlatform, oldAddType]) => {
+    if (isEdit.value) {
+      return
+    }
+
+    const isTargetMode = platform === 'openai' && addType === 'oauth'
+    const wasTargetMode = oldPlatform === 'openai' && oldAddType === 'oauth'
+
+    if (isTargetMode && isBlankProxyState(form.value.proxy)) {
+      form.value.proxy = createOpenAICodexOauthProxyState()
+      return
+    }
+
+    if (!isTargetMode && wasTargetMode && isOpenAICodexOauthProxyState(form.value.proxy)) {
+      form.value.proxy = createDefaultProxyState()
+    }
+  }
+)
+
 // 监听分组选择变化，保持 groupId 和 groupIds 同步
 watch(
   () => form.value.groupIds,
@@ -6401,6 +6632,9 @@ watch(
   () => props.account,
   (newAccount) => {
     if (newAccount) {
+      clearPendingOpenAIOAuthDraft({ clearTokenFields: false })
+      editOpenAIAuthMode.value = 'manual'
+
       initModelMappings()
       // 重新初始化代理配置
       const proxyConfig = normalizeProxyFormState(newAccount.proxy)

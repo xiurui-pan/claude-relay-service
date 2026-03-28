@@ -850,6 +850,10 @@ const cookieAuthError = ref('')
 const showSessionKeyHelp = ref(false)
 const batchProgress = ref({ current: 0, total: 0 }) // 批量进度
 
+const getOauthErrorMessage = (fallback = '授权失败，请重试') => {
+  return accountsStore.error || fallback
+}
+
 // 解析后的 sessionKey 数量
 const parsedSessionKeyCount = computed(() => {
   return sessionKey.value
@@ -991,6 +995,9 @@ const generateAuthUrl = async () => {
 
     if (props.platform === 'claude') {
       const result = await accountsStore.generateClaudeAuthUrl(proxyConfig)
+      if (!result) {
+        throw new Error(getOauthErrorMessage('生成授权链接失败'))
+      }
       authUrl.value = result.authUrl
       sessionId.value = result.sessionId
     } else if (props.platform === 'gemini' || props.platform === 'gemini-antigravity') {
@@ -998,14 +1005,23 @@ const generateAuthUrl = async () => {
         ...proxyConfig,
         oauthProvider: geminiOauthProvider.value
       })
+      if (!result) {
+        throw new Error(getOauthErrorMessage('生成授权链接失败'))
+      }
       authUrl.value = result.authUrl
       sessionId.value = result.sessionId
     } else if (props.platform === 'openai') {
       const result = await accountsStore.generateOpenAIAuthUrl(proxyConfig)
+      if (!result) {
+        throw new Error(getOauthErrorMessage('生成授权链接失败'))
+      }
       authUrl.value = result.authUrl
       sessionId.value = result.sessionId
     } else if (props.platform === 'droid') {
       const result = await accountsStore.generateDroidAuthUrl(proxyConfig)
+      if (!result) {
+        throw new Error(getOauthErrorMessage('生成授权链接失败'))
+      }
       authUrl.value = result.verificationUriComplete || result.verificationUri
       verificationUri.value = result.verificationUri
       verificationUriComplete.value = result.verificationUriComplete || result.verificationUri
@@ -1163,6 +1179,10 @@ const exchangeCode = async () => {
       stopCountdown()
     }
 
+    if (!tokenInfo) {
+      throw new Error(getOauthErrorMessage('授权失败，请检查授权码是否正确'))
+    }
+
     emit('success', tokenInfo)
   } catch (error) {
     showToast(error.message || '授权失败，请检查授权码是否正确', 'error')
@@ -1213,6 +1233,9 @@ const handleCookieAuth = async () => {
         sessionKey: sessionKeys[i],
         proxy: proxyConfig
       })
+      if (!result) {
+        throw new Error(getOauthErrorMessage('自动授权失败，请检查 sessionKey 是否有效'))
+      }
       results.push(result)
     } catch (error) {
       errors.push({

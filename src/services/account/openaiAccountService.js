@@ -5,6 +5,7 @@ const ProxyHelper = require('../../utils/proxyHelper')
 const config = require('../../../config/config')
 const logger = require('../../utils/logger')
 const upstreamErrorHelper = require('../../utils/upstreamErrorHelper')
+const accountGroupService = require('../accountGroupService')
 // const { maskToken } = require('../../utils/tokenMask')
 const {
   logRefreshStart,
@@ -41,6 +42,11 @@ function toNumberOrNull(value) {
 
   const num = Number(value)
   return Number.isFinite(num) ? num : null
+}
+
+function isDisposableFreeAccount(account) {
+  const name = String(account?.name || '')
+  return /^free-\d+$/.test(name)
 }
 
 function computeResetMeta(updatedAt, resetAfterSeconds) {
@@ -990,6 +996,16 @@ async function setAccountRateLimited(accountId, isLimited, resetsInSeconds = nul
   if (isLimited) {
     try {
       const account = await getAccount(accountId)
+      if (!account) {
+        logger.info(
+          `🔕 Skipping blocked webhook notification because OpenAI account ${accountId} no longer exists`
+        )
+        return
+      }
+      if (isDisposableFreeAccount(account)) {
+        logger.info(`🔕 Skipping blocked webhook notification for disposable free account ${account.name}`)
+        return
+      }
       const webhookNotifier = require('../../utils/webhookNotifier')
       await webhookNotifier.sendAccountAnomalyNotification({
         accountId,
@@ -1014,6 +1030,21 @@ async function markAccountUnauthorized(accountId, reason = 'OpenAI账号认证�
   const account = await getAccount(accountId)
   if (!account) {
     throw new Error('Account not found')
+  }
+
+  if (isDisposableFreeAccount(account)) {
+    try {
+      await accountGroupService.removeAccountFromAllGroups(accountId, 'openai')
+      await deleteAccount(accountId)
+      logger.warn(`🗑️ Auto-deleted disposable free OpenAI account ${account.name} after 401 error`)
+      return
+    } catch (deleteError) {
+      logger.error(
+        `❌ Failed to auto-delete disposable free OpenAI account ${account.name} after 401 error:`,
+        deleteError
+      )
+      // 删除失败时退回到普通 unauthorized 逻辑，避免账号继续保持可用状态
+    }
   }
 
   // disableAutoProtection 检查
@@ -1214,7 +1245,17 @@ async function updateCodexUsageSnapshot(accountId, usageSnapshot) {
   let hasPayload = false
 
   for (const [key, field] of Object.entries(fieldMap)) {
-    if (usageSnapshot[key] !== undefined && usageSnapshot[key] !== null) {
+    if (!Object.prototype.hasOwnProperty.call(usageSnapshot, key)) {
+      continue
+    }
+
+    if (usageSnapshot[key] === null) {
+      updates[field] = ''
+      hasPayload = true
+      continue
+    }
+
+    if (usageSnapshot[key] !== undefined) {
       updates[field] = String(usageSnapshot[key])
       hasPayload = true
     }

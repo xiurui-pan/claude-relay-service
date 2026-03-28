@@ -135,19 +135,15 @@
             <div class="grid grid-cols-2 gap-4 text-sm">
               <div>
                 <span class="text-gray-500">Requests:</span>
-                <span class="ml-2 font-medium">{{ formatNumber(apiKey.usage.requests || 0) }}</span>
+                <span class="ml-2 font-medium">{{ formatNumber(usageRequests) }}</span>
               </div>
               <div>
                 <span class="text-gray-500">Input Tokens:</span>
-                <span class="ml-2 font-medium">{{
-                  formatNumber(apiKey.usage.inputTokens || 0)
-                }}</span>
+                <span class="ml-2 font-medium">{{ formatNumber(usageInputTokens) }}</span>
               </div>
               <div>
                 <span class="text-gray-500">Output Tokens:</span>
-                <span class="ml-2 font-medium">{{
-                  formatNumber(apiKey.usage.outputTokens || 0)
-                }}</span>
+                <span class="ml-2 font-medium">{{ formatNumber(usageOutputTokens) }}</span>
               </div>
               <div>
                 <span class="text-gray-500">Total Cost:</span>
@@ -196,10 +192,10 @@
 </template>
 
 <script setup>
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import { showToast, formatNumber, formatDate } from '@/utils/tools'
 
-defineProps({
+const props = defineProps({
   show: {
     type: Boolean,
     default: false
@@ -213,6 +209,14 @@ defineProps({
 const emit = defineEmits(['close'])
 
 const showFullKey = ref(false)
+const usageTotal = computed(() => props.apiKey?.usage?.total || {})
+const usageRequests = computed(() => usageTotal.value.requests ?? props.apiKey?.usage?.requests ?? 0)
+const usageInputTokens = computed(
+  () => usageTotal.value.inputTokens ?? props.apiKey?.usage?.inputTokens ?? 0
+)
+const usageOutputTokens = computed(
+  () => usageTotal.value.outputTokens ?? props.apiKey?.usage?.outputTokens ?? 0
+)
 
 const copyToClipboard = async (text) => {
   try {

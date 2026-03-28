@@ -5,146 +5,26 @@ const redis = require('../../models/redis')
 const logger = require('../../utils/logger')
 const { isSchedulable, sortAccountsByPriority } = require('../../utils/commonHelper')
 const upstreamErrorHelper = require('../../utils/upstreamErrorHelper')
-const appConfig = require('../../../config/config')
-const claudeRelayConfigService = require('../claudeRelayConfigService')
-const { sortAccountsWithAdaptivePriority } = require('./openaiAdaptivePriorityScorer')
 
 class UnifiedOpenAIScheduler {
   constructor() {
     this.SESSION_MAPPING_PREFIX = 'unified_openai_session_mapping:'
-    this.ADAPTIVE_SELECTION_BAND_DELTA = 3
   }
 
-  async _getAdaptiveSchedulingOptions() {
-    const adaptiveConfig = appConfig.openaiScheduling || {}
-    const fallbackOptions = {
-      enabled: adaptiveConfig.adaptivePriorityEnabled !== false,
-      includeResponses: adaptiveConfig.includeResponsesInAdaptivePool === true,
-      codexUsageMaxAgeMinutes: adaptiveConfig.codexUsageMaxAgeMinutes,
-      secondaryWeight: adaptiveConfig.secondaryWeight,
-      resetTimeWeight: adaptiveConfig.resetTimeWeight,
-      manualPriorityWeight: adaptiveConfig.manualPriorityWeight,
-      primarySaturationPercent: adaptiveConfig.primarySaturationPercent,
-      secondarySaturationPercent: adaptiveConfig.secondarySaturationPercent,
-      primaryHardStopPercent: adaptiveConfig.primaryHardStopPercent,
-      secondaryHardStopPercent: adaptiveConfig.secondaryHardStopPercent,
-      hardStopGraceSeconds: adaptiveConfig.hardStopGraceSeconds,
-      nearCapPenaltyWeight: adaptiveConfig.nearCapPenaltyWeight,
-      scheduleDriftPenaltyWeight: adaptiveConfig.scheduleDriftPenaltyWeight,
-      selectionBandDelta: adaptiveConfig.selectionBandDelta
-    }
-
-    try {
-      const relayConfig = await claudeRelayConfigService.getConfig()
-      return {
-        enabled: relayConfig.openaiAdaptivePriorityEnabled ?? fallbackOptions.enabled,
-        includeResponses:
-          relayConfig.openaiAdaptiveIncludeResponses ?? fallbackOptions.includeResponses,
-        codexUsageMaxAgeMinutes:
-          relayConfig.openaiAdaptiveCodexUsageMaxAgeMinutes ??
-          fallbackOptions.codexUsageMaxAgeMinutes,
-        secondaryWeight:
-          relayConfig.openaiAdaptiveSecondaryWeight ?? fallbackOptions.secondaryWeight,
-        resetTimeWeight:
-          relayConfig.openaiAdaptiveResetTimeWeight ?? fallbackOptions.resetTimeWeight,
-        manualPriorityWeight:
-          relayConfig.openaiAdaptiveManualPriorityWeight ?? fallbackOptions.manualPriorityWeight,
-        primarySaturationPercent:
-          relayConfig.openaiAdaptivePrimarySaturationPercent ??
-          fallbackOptions.primarySaturationPercent,
-        secondarySaturationPercent:
-          relayConfig.openaiAdaptiveSecondarySaturationPercent ??
-          fallbackOptions.secondarySaturationPercent,
-        primaryHardStopPercent:
-          relayConfig.openaiAdaptivePrimaryHardStopPercent ??
-          fallbackOptions.primaryHardStopPercent,
-        secondaryHardStopPercent:
-          relayConfig.openaiAdaptiveSecondaryHardStopPercent ??
-          fallbackOptions.secondaryHardStopPercent,
-        hardStopGraceSeconds:
-          relayConfig.openaiAdaptiveHardStopGraceSeconds ?? fallbackOptions.hardStopGraceSeconds,
-        nearCapPenaltyWeight:
-          relayConfig.openaiAdaptiveNearCapPenaltyWeight ?? fallbackOptions.nearCapPenaltyWeight,
-        scheduleDriftPenaltyWeight:
-          relayConfig.openaiAdaptiveScheduleDriftPenaltyWeight ??
-          fallbackOptions.scheduleDriftPenaltyWeight,
-        selectionBandDelta:
-          relayConfig.openaiAdaptiveSelectionBandDelta ?? fallbackOptions.selectionBandDelta
-      }
-    } catch (error) {
-      logger.debug('⚠️ Failed to load adaptive scheduling config, fallback to env defaults:', error)
-      return fallbackOptions
-    }
+  _normalizeExcludedAccountIds(options = {}) {
+    const rawIds = Array.isArray(options?.excludedAccountIds) ? options.excludedAccountIds : []
+    return new Set(
+      rawIds
+        .map((id) => (id === undefined || id === null ? '' : String(id).trim()))
+        .filter(Boolean)
+    )
   }
 
-  _sortAccountsForSelection(availableAccounts, adaptiveOptions, scenario = 'shared_pool') {
-    if (!adaptiveOptions.enabled) {
-      return sortAccountsByPriority(availableAccounts)
+  _isExcludedAccount(accountId, excludedAccountIds) {
+    if (!accountId || !excludedAccountIds || excludedAccountIds.size === 0) {
+      return false
     }
-
-    const sortedAccounts = sortAccountsWithAdaptivePriority(availableAccounts, adaptiveOptions)
-    const selectedAdaptiveMeta = sortedAccounts[0]?.__adaptiveScheduling
-    if (selectedAdaptiveMeta?.applied) {
-      logger.debug(
-        `⚖️ OpenAI adaptive scheduling (${scenario}) selected dynamic priority ${selectedAdaptiveMeta.priority} ` +
-          `(manual=${selectedAdaptiveMeta.staticPriority}, auto=${selectedAdaptiveMeta.autoPriority}, ` +
-          `availability=${(selectedAdaptiveMeta.overallAvailability * 100).toFixed(1)}%)`
-      )
-    }
-    return sortedAccounts
-  }
-
-  _pickAccountFromAdaptiveBand(sortedAccounts, adaptiveOptions, scenario = 'shared_pool') {
-    if (!sortedAccounts.length) {
-      return null
-    }
-
-    if (!adaptiveOptions.enabled) {
-      return sortedAccounts[0]
-    }
-
-    const best = sortedAccounts[0]
-    const bestPriority = best.__adaptiveScheduling?.priority
-    if (!Number.isFinite(bestPriority)) {
-      return best
-    }
-
-    const configuredBandDelta = Number.isFinite(adaptiveOptions.selectionBandDelta)
-      ? adaptiveOptions.selectionBandDelta
-      : this.ADAPTIVE_SELECTION_BAND_DELTA
-    const bandDelta = Math.max(0, Math.floor(configuredBandDelta))
-    if (bandDelta === 0) {
-      return best
-    }
-
-    const candidates = sortedAccounts.filter((account) => {
-      const candidatePriority = account.__adaptiveScheduling?.priority
-      return Number.isFinite(candidatePriority) && candidatePriority <= bestPriority + bandDelta
-    })
-
-    if (candidates.length <= 1) {
-      return best
-    }
-
-    const byLeastRecentlyUsed = [...candidates].sort((a, b) => {
-      const lastUsedA = a.lastUsedAt ? new Date(a.lastUsedAt).getTime() : 0
-      const lastUsedB = b.lastUsedAt ? new Date(b.lastUsedAt).getTime() : 0
-      if (lastUsedA !== lastUsedB) {
-        return lastUsedA - lastUsedB
-      }
-      const createdA = a.createdAt ? new Date(a.createdAt).getTime() : 0
-      const createdB = b.createdAt ? new Date(b.createdAt).getTime() : 0
-      return createdA - createdB
-    })
-
-    const selected = byLeastRecentlyUsed[0]
-    if (selected?.accountId !== best.accountId) {
-      logger.debug(
-        `⚖️ OpenAI adaptive band routing (${scenario}) selected ${selected.name || selected.accountId} ` +
-          `from ${candidates.length} candidates (bestPriority=${bestPriority}, band=${bandDelta})`
-      )
-    }
-    return selected
+    return excludedAccountIds.has(String(accountId))
   }
 
   // 🔧 辅助方法：检查账户是否被限流（兼容字符串和对象格式）
@@ -255,8 +135,10 @@ class UnifiedOpenAIScheduler {
   }
 
   // 🎯 统一调度OpenAI账号
-  async selectAccountForApiKey(apiKeyData, sessionHash = null, requestedModel = null) {
+  async selectAccountForApiKey(apiKeyData, sessionHash = null, requestedModel = null, options = {}) {
     try {
+      const excludedAccountIds = this._normalizeExcludedAccountIds(options)
+
       // 如果API Key绑定了专属账户或分组，优先使用
       if (apiKeyData.openaiAccountId) {
         // 检查是否是分组
@@ -265,7 +147,9 @@ class UnifiedOpenAIScheduler {
           logger.info(
             `🎯 API key ${apiKeyData.name} is bound to group ${groupId}, selecting from group`
           )
-          return await this.selectAccountFromGroup(groupId, sessionHash, requestedModel, apiKeyData)
+          return await this.selectAccountFromGroup(groupId, sessionHash, requestedModel, {
+            excludedAccountIds: Array.from(excludedAccountIds)
+          })
         }
 
         // 普通专属账户 - 根据前缀判断是 OpenAI 还是 OpenAI-Responses 类型
@@ -281,6 +165,14 @@ class UnifiedOpenAIScheduler {
           // 普通 OpenAI 账户
           boundAccount = await openaiAccountService.getAccount(apiKeyData.openaiAccountId)
           accountType = 'openai'
+        }
+
+        if (boundAccount && this._isExcludedAccount(boundAccount.id, excludedAccountIds)) {
+          const errorMsg = `Dedicated account ${boundAccount.name} is temporarily excluded`
+          logger.warn(`⚠️ ${errorMsg}`)
+          const error = new Error(errorMsg)
+          error.statusCode = 429
+          throw error
         }
 
         const isActiveBoundAccount =
@@ -412,31 +304,40 @@ class UnifiedOpenAIScheduler {
       if (sessionHash) {
         const mappedAccount = await this._getSessionMapping(sessionHash)
         if (mappedAccount) {
-          // 验证映射的账户是否仍然可用
-          const isAvailable = await this._isAccountAvailable(
-            mappedAccount.accountId,
-            mappedAccount.accountType
-          )
-          if (isAvailable) {
-            // 🚀 智能会话续期（续期 unified 映射键，按配置）
-            await this._extendSessionMappingTTL(sessionHash)
+          if (this._isExcludedAccount(mappedAccount.accountId, excludedAccountIds)) {
             logger.info(
-              `🎯 Using sticky session account: ${mappedAccount.accountId} (${mappedAccount.accountType}) for session ${sessionHash}`
-            )
-            // 更新账户的最后使用时间
-            await this.updateAccountLastUsed(mappedAccount.accountId, mappedAccount.accountType)
-            return mappedAccount
-          } else {
-            logger.warn(
-              `⚠️ Mapped account ${mappedAccount.accountId} is no longer available, selecting new account`
+              `🧹 Removing sticky session account ${mappedAccount.accountId} because it is excluded`
             )
             await this._deleteSessionMapping(sessionHash)
+          } else {
+          // 验证映射的账户是否仍然可用
+            const isAvailable = await this._isAccountAvailable(
+              mappedAccount.accountId,
+              mappedAccount.accountType
+            )
+            if (isAvailable) {
+              // 🚀 智能会话续期（续期 unified 映射键，按配置）
+              await this._extendSessionMappingTTL(sessionHash)
+              logger.info(
+                `🎯 Using sticky session account: ${mappedAccount.accountId} (${mappedAccount.accountType}) for session ${sessionHash}`
+              )
+              // 更新账户的最后使用时间
+              await this.updateAccountLastUsed(mappedAccount.accountId, mappedAccount.accountType)
+              return mappedAccount
+            } else {
+              logger.warn(
+                `⚠️ Mapped account ${mappedAccount.accountId} is no longer available, selecting new account`
+              )
+              await this._deleteSessionMapping(sessionHash)
+            }
           }
         }
       }
 
       // 获取所有可用账户
-      const availableAccounts = await this._getAllAvailableAccounts(apiKeyData, requestedModel)
+      const availableAccounts = await this._getAllAvailableAccounts(apiKeyData, requestedModel, {
+        excludedAccountIds: Array.from(excludedAccountIds)
+      })
 
       if (availableAccounts.length === 0) {
         // 提供更详细的错误信息
@@ -454,21 +355,10 @@ class UnifiedOpenAIScheduler {
       }
 
       // 按优先级和最后使用时间排序（与 Claude/Gemini 调度保持一致）
-      const adaptiveOptions = await this._getAdaptiveSchedulingOptions()
-      const sortedAccounts = this._sortAccountsForSelection(
-        availableAccounts,
-        adaptiveOptions,
-        'shared_pool'
-      )
+      const sortedAccounts = sortAccountsByPriority(availableAccounts)
 
-      // 选择账户（自适应模式下启用小带宽分流，避免把单账户瞬时打爆）
-      const selectedAccount = this._pickAccountFromAdaptiveBand(
-        sortedAccounts,
-        adaptiveOptions,
-        'shared_pool'
-      )
-      const selectedPriority =
-        selectedAccount.__adaptiveScheduling?.priority || selectedAccount.priority || 50
+      // 选择第一个账户
+      const selectedAccount = sortedAccounts[0]
 
       // 如果有会话哈希，建立新的映射
       if (sessionHash) {
@@ -483,7 +373,7 @@ class UnifiedOpenAIScheduler {
       }
 
       logger.info(
-        `🎯 Selected account: ${selectedAccount.name} (${selectedAccount.accountId}, ${selectedAccount.accountType}, priority: ${selectedPriority}) for API key ${apiKeyData.name}`
+        `🎯 Selected account: ${selectedAccount.name} (${selectedAccount.accountId}, ${selectedAccount.accountType}, priority: ${selectedAccount.priority || 50}) for API key ${apiKeyData.name}`
       )
 
       // 更新账户的最后使用时间
@@ -500,7 +390,8 @@ class UnifiedOpenAIScheduler {
   }
 
   // 📋 获取所有可用账户（仅共享池）
-  async _getAllAvailableAccounts(apiKeyData, requestedModel = null) {
+  async _getAllAvailableAccounts(apiKeyData, requestedModel = null, options = {}) {
+    const excludedAccountIds = this._normalizeExcludedAccountIds(options)
     const availableAccounts = []
 
     // 注意：专属账户的处理已经在 selectAccountForApiKey 中完成
@@ -515,6 +406,11 @@ class UnifiedOpenAIScheduler {
         (account.accountType === 'shared' || !account.accountType) // 兼容旧数据
       ) {
         const accountId = account.id || account.accountId
+
+        if (this._isExcludedAccount(accountId, excludedAccountIds)) {
+          logger.debug(`⏭️ Skipping OpenAI account ${account.name} - excluded from selection`)
+          continue
+        }
 
         const readiness = await this._ensureAccountReadyForScheduling(account, accountId, {
           sanitized: true
@@ -588,6 +484,13 @@ class UnifiedOpenAIScheduler {
         account.status !== 'error' &&
         (account.accountType === 'shared' || !account.accountType)
       ) {
+        if (this._isExcludedAccount(account.id, excludedAccountIds)) {
+          logger.debug(
+            `⏭️ Skipping OpenAI-Responses account ${account.name} - excluded from selection`
+          )
+          continue
+        }
+
         // 检查 rateLimitStatus 或 status === 'rateLimited'
         const hasRateLimitFlag =
           this._hasRateLimitFlag(account.rateLimitStatus) || account.status === 'rateLimited'
@@ -770,6 +673,7 @@ class UnifiedOpenAIScheduler {
     const client = redis.getClientSafe()
     const mappingData = JSON.stringify({ accountId, accountType })
     // 依据配置设置TTL（小时）
+    const appConfig = require('../../../config/config')
     const ttlHours = appConfig.session?.stickyTtlHours || 1
     const ttlSeconds = Math.max(1, Math.floor(ttlHours * 60 * 60))
     await client.setex(`${this.SESSION_MAPPING_PREFIX}${sessionHash}`, ttlSeconds, mappingData)
@@ -795,6 +699,7 @@ class UnifiedOpenAIScheduler {
         return true
       }
 
+      const appConfig = require('../../../config/config')
       const ttlHours = appConfig.session?.stickyTtlHours || 1
       const renewalThresholdMinutes = appConfig.session?.renewalThresholdMinutes || 0
       if (!renewalThresholdMinutes) {
@@ -957,8 +862,9 @@ class UnifiedOpenAIScheduler {
   }
 
   // 👥 从分组中选择账户
-  async selectAccountFromGroup(groupId, sessionHash = null, requestedModel = null) {
+  async selectAccountFromGroup(groupId, sessionHash = null, requestedModel = null, options = {}) {
     try {
+      const excludedAccountIds = this._normalizeExcludedAccountIds(options)
       // 获取分组信息
       const group = await accountGroupService.getGroup(groupId)
       if (!group) {
@@ -979,26 +885,30 @@ class UnifiedOpenAIScheduler {
       if (sessionHash) {
         const mappedAccount = await this._getSessionMapping(sessionHash)
         if (mappedAccount) {
+          if (this._isExcludedAccount(mappedAccount.accountId, excludedAccountIds)) {
+            await this._deleteSessionMapping(sessionHash)
+          } else {
           // 验证映射的账户是否仍然可用并且在分组中
-          const isInGroup = await this._isAccountInGroup(mappedAccount.accountId, groupId)
-          if (isInGroup) {
-            const isAvailable = await this._isAccountAvailable(
-              mappedAccount.accountId,
-              mappedAccount.accountType
-            )
-            if (isAvailable) {
-              // 🚀 智能会话续期（续期 unified 映射键，按配置）
-              await this._extendSessionMappingTTL(sessionHash)
-              logger.info(
-                `🎯 Using sticky session account from group: ${mappedAccount.accountId} (${mappedAccount.accountType})`
+            const isInGroup = await this._isAccountInGroup(mappedAccount.accountId, groupId)
+            if (isInGroup) {
+              const isAvailable = await this._isAccountAvailable(
+                mappedAccount.accountId,
+                mappedAccount.accountType
               )
-              // 更新账户的最后使用时间
-              await this.updateAccountLastUsed(mappedAccount.accountId, mappedAccount.accountType)
-              return mappedAccount
+              if (isAvailable) {
+                // 🚀 智能会话续期（续期 unified 映射键，按配置）
+                await this._extendSessionMappingTTL(sessionHash)
+                logger.info(
+                  `🎯 Using sticky session account from group: ${mappedAccount.accountId} (${mappedAccount.accountType})`
+                )
+                // 更新账户的最后使用时间
+                await this.updateAccountLastUsed(mappedAccount.accountId, mappedAccount.accountType)
+                return mappedAccount
+              }
             }
+            // 如果账户不可用或不在分组中，删除映射
+            await this._deleteSessionMapping(sessionHash)
           }
-          // 如果账户不可用或不在分组中，删除映射
-          await this._deleteSessionMapping(sessionHash)
         }
       }
 
@@ -1013,6 +923,11 @@ class UnifiedOpenAIScheduler {
       // 获取可用的分组成员账户（支持 OpenAI 和 OpenAI-Responses 两种类型）
       const availableAccounts = []
       for (const memberId of memberIds) {
+        if (this._isExcludedAccount(memberId, excludedAccountIds)) {
+          logger.debug(`⏭️ Skipping group member ${memberId} - excluded from selection`)
+          continue
+        }
+
         // 首先尝试从 OpenAI 账户服务获取
         let account = await openaiAccountService.getAccount(memberId)
         let accountType = 'openai'
@@ -1097,20 +1012,10 @@ class UnifiedOpenAIScheduler {
       }
 
       // 按优先级和最后使用时间排序（与 Claude/Gemini 调度保持一致）
-      const adaptiveOptions = await this._getAdaptiveSchedulingOptions()
-      const sortedAccounts = this._sortAccountsForSelection(
-        availableAccounts,
-        adaptiveOptions,
-        `group:${groupId}`
-      )
+      const sortedAccounts = sortAccountsByPriority(availableAccounts)
 
-      const selectedAccount = this._pickAccountFromAdaptiveBand(
-        sortedAccounts,
-        adaptiveOptions,
-        `group:${groupId}`
-      )
-      const selectedPriority =
-        selectedAccount.__adaptiveScheduling?.priority || selectedAccount.priority || 50
+      // 选择第一个账户
+      const selectedAccount = sortedAccounts[0]
 
       // 如果有会话哈希，建立新的映射
       if (sessionHash) {
@@ -1125,7 +1030,7 @@ class UnifiedOpenAIScheduler {
       }
 
       logger.info(
-        `🎯 Selected account from group: ${selectedAccount.name} (${selectedAccount.accountId}, ${selectedAccount.accountType}, priority: ${selectedPriority})`
+        `🎯 Selected account from group: ${selectedAccount.name} (${selectedAccount.accountId}, ${selectedAccount.accountType}, priority: ${selectedAccount.priority || 50})`
       )
 
       // 更新账户的最后使用时间

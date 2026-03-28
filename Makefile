@@ -1,7 +1,7 @@
 # Claude Relay Service Makefile
 # 功能完整的 AI API 中转服务，支持 Claude 和 Gemini 双平台
 
-.PHONY: help install setup dev start test lint clean docker-up docker-down service-start service-stop service-status logs cli-admin cli-keys cli-accounts cli-status ci-release-trigger release-safe rollback-safe
+.PHONY: help install setup dev start test lint clean docker-up docker-down service-start service-stop service-status logs cli-admin cli-keys cli-accounts cli-status ci-release-trigger
 
 # 默认目标：显示帮助信息
 help:
@@ -40,8 +40,6 @@ help:
 	@echo "    service-status - 查看服务状态"
 	@echo "    logs           - 查看应用日志"
 	@echo "    logs-follow    - 实时查看日志"
-	@echo "    release-safe   - 安全发布（备份+健康检查+失败自动回滚）"
-	@echo "    rollback-safe  - 安全回滚（基于备份ID）"
 	@echo ""
 	@echo "  ⚙️  CLI 管理工具："
 	@echo "    cli-admin      - 管理员操作"
@@ -142,14 +140,6 @@ service-restart-daemon:
 service-status:
 	@echo "📊 查看服务状态..."
 	npm run service:status
-
-release-safe:
-	@echo "🚀 执行安全发布..."
-	npm run release:safe -- $(ARGS)
-
-rollback-safe:
-	@echo "↩️  执行安全回滚..."
-	npm run rollback:safe -- $(ARGS)
 
 logs:
 	@echo "📋 查看应用日志..."
