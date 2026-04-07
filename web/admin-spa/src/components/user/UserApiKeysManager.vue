@@ -4,7 +4,7 @@
       <div class="sm:flex-auto">
         <h1 class="text-2xl font-semibold text-gray-900">My API Keys</h1>
         <p class="mt-2 text-sm text-gray-700">
-          Manage your API keys to access Claude Relay services
+          Manage your API keys to access Codex Relay services
         </p>
       </div>
       <div class="mt-4 sm:ml-16 sm:mt-0 sm:flex-none">

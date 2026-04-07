@@ -20,8 +20,10 @@ class WebhookNotifier {
    */
   async sendAccountAnomalyNotification(notification) {
     try {
+      const notificationType = this._resolveNotificationType(notification)
+
       // 使用新的webhookService发送通知
-      await webhookService.sendNotification('accountAnomaly', {
+      await webhookService.sendNotification(notificationType, {
         accountId: notification.accountId,
         accountName: notification.accountName,
         platform: notification.platform,
@@ -34,6 +36,25 @@ class WebhookNotifier {
     } catch (error) {
       logger.error('Failed to send account anomaly notification:', error)
     }
+  }
+
+  _resolveNotificationType(notification) {
+    const errorCode = String(notification?.errorCode || '').toUpperCase()
+    const status = String(notification?.status || '').toLowerCase()
+    const reason = String(notification?.reason || '').toLowerCase()
+
+    if (
+      errorCode.includes('RATE_LIMIT') ||
+      errorCode.includes('RATE_LIMITED') ||
+      status === 'rate_limited' ||
+      reason.includes('rate limit') ||
+      reason.includes('rate limited') ||
+      reason.includes('429')
+    ) {
+      return 'accountRateLimited'
+    }
+
+    return 'accountAnomaly'
   }
 
   /**

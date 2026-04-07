@@ -41,16 +41,14 @@ describe('PricingService - 200K+ Long Context Pricing', () => {
   const fs = require('fs')
   const path = require('path')
 
-  // 使用真实的 model_pricing.json 数据（优先 data/，fallback 到 resources/）
+  // 测试固定使用仓库内的原始价格文件，避免本机运行态 data/ 覆盖测试预期
   const realFs = jest.requireActual('fs')
-  const primaryPath = path.join(process.cwd(), 'data', 'model_pricing.json')
-  const fallbackPath = path.join(
+  const pricingFilePath = path.join(
     process.cwd(),
     'resources',
     'model-pricing',
     'model_prices_and_context_window.json'
   )
-  const pricingFilePath = realFs.existsSync(primaryPath) ? primaryPath : fallbackPath
   const pricingData = JSON.parse(realFs.readFileSync(pricingFilePath, 'utf8'))
 
   beforeEach(() => {
@@ -370,6 +368,55 @@ describe('PricingService - 200K+ Long Context Pricing', () => {
       expect(result.cacheCreateCost).toBeCloseTo(expectedCacheCreateCost, 10)
       expect(result.cacheReadCost).toBeCloseTo(expectedCacheReadCost, 10)
       expect(result.totalCost).toBeCloseTo(expectedTotal, 10)
+    })
+  })
+
+  describe('启动阶段价格加载', () => {
+    it('价格文件过期时应在后台刷新，而不是阻塞启动', async () => {
+      jest.useFakeTimers()
+
+      fs.existsSync.mockReturnValue(true)
+      fs.statSync.mockReturnValue({
+        mtime: new Date(Date.now() - 25 * 60 * 60 * 1000),
+        mtimeMs: Date.now() - 25 * 60 * 60 * 1000
+      })
+
+      const checkAndUpdatePricingSpy = jest
+        .spyOn(pricingService, 'checkAndUpdatePricing')
+        .mockResolvedValue(undefined)
+
+      pricingService.scheduleStartupRefresh()
+
+      expect(checkAndUpdatePricingSpy).not.toHaveBeenCalled()
+
+      await jest.advanceTimersByTimeAsync(0)
+
+      expect(checkAndUpdatePricingSpy).toHaveBeenCalledWith({
+        preserveExistingOnFailure: true
+      })
+
+      checkAndUpdatePricingSpy.mockRestore()
+      jest.useRealTimers()
+    })
+
+    it('后台刷新失败时应保留当前已加载的本地价格数据', async () => {
+      const originalPricingData = { local: { input_cost_per_token: 1 } }
+      pricingService.pricingData = originalPricingData
+
+      const downloadSpy = jest
+        .spyOn(pricingService, '_downloadFromRemote')
+        .mockRejectedValue(new Error('Download timeout after 30 seconds'))
+      const useFallbackPricingSpy = jest
+        .spyOn(pricingService, 'useFallbackPricing')
+        .mockResolvedValue(undefined)
+
+      await pricingService.downloadPricingData({ preserveExistingOnFailure: true })
+
+      expect(useFallbackPricingSpy).not.toHaveBeenCalled()
+      expect(pricingService.pricingData).toBe(originalPricingData)
+
+      downloadSpy.mockRestore()
+      useFallbackPricingSpy.mockRestore()
     })
   })
 })

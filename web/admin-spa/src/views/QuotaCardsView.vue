@@ -9,7 +9,7 @@
               额度卡管理
             </h3>
             <p class="text-sm text-gray-600 dark:text-gray-400 sm:text-base">
-              管理额度卡和时间卡，用户可核销增加额度
+              管理额度卡、时间卡和重置卡，用户可核销增加额度或重置次数
             </p>
           </div>
           <button
@@ -265,27 +265,14 @@
                 <span
                   :class="[
                     'inline-flex rounded-full px-2 py-1 text-xs font-medium',
-                    card.type === 'quota'
-                      ? 'bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300'
-                      : card.type === 'time'
-                        ? 'bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300'
-                        : 'bg-purple-100 text-purple-800 dark:bg-purple-900/30 dark:text-purple-300'
+                    getCardTypeBadgeClass(card.type)
                   ]"
                 >
-                  {{
-                    card.type === 'quota' ? '额度卡' : card.type === 'time' ? '时间卡' : '组合卡'
-                  }}
+                  {{ getCardTypeLabel(card.type) }}
                 </span>
               </td>
               <td class="whitespace-nowrap px-4 py-3 text-sm text-gray-900 dark:text-white">
-                <span v-if="card.type === 'quota' || card.type === 'combo'"
-                  >${{ card.quotaAmount }}</span
-                >
-                <span v-if="card.type === 'combo'"> + </span>
-                <span v-if="card.type === 'time' || card.type === 'combo'">
-                  {{ card.timeAmount }}
-                  {{ card.timeUnit === 'hours' ? '小时' : card.timeUnit === 'days' ? '天' : '月' }}
-                </span>
+                {{ formatCardEffect(card) }}
               </td>
               <td class="whitespace-nowrap px-4 py-3">
                 <span
@@ -403,7 +390,7 @@
               <th
                 class="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-300"
               >
-                增加额度
+                卡片效果
               </th>
               <th
                 class="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-300"
@@ -456,18 +443,7 @@
                 </span>
               </td>
               <td class="whitespace-nowrap px-4 py-3 text-sm text-gray-900 dark:text-white">
-                <span v-if="redemption.quotaAdded > 0">${{ redemption.quotaAdded }}</span>
-                <span v-if="redemption.quotaAdded > 0 && redemption.timeAdded > 0"> + </span>
-                <span v-if="redemption.timeAdded > 0">
-                  {{ redemption.timeAdded }}
-                  {{
-                    redemption.timeUnit === 'hours'
-                      ? '小时'
-                      : redemption.timeUnit === 'days'
-                        ? '天'
-                        : '月'
-                  }}
-                </span>
+                {{ formatRedemptionEffect(redemption) }}
               </td>
               <td class="whitespace-nowrap px-4 py-3">
                 <span
@@ -523,7 +499,7 @@
               >
                 <i class="fas fa-ticket-alt text-white" />
               </div>
-              <h3 class="text-lg font-bold text-gray-900 dark:text-gray-100">创建额度卡</h3>
+              <h3 class="text-lg font-bold text-gray-900 dark:text-gray-100">创建卡片</h3>
             </div>
             <button
               class="p-1 text-gray-400 transition-colors hover:text-gray-600 dark:text-gray-500 dark:hover:text-gray-300"
@@ -546,6 +522,7 @@
                 <option value="quota">额度卡</option>
                 <option value="time">时间卡</option>
                 <option value="combo">组合卡</option>
+                <option value="reset">重置卡</option>
               </select>
             </div>
 
@@ -582,6 +559,18 @@
                   <option value="months">月</option>
                 </select>
               </div>
+            </div>
+
+            <div v-if="newCard.type === 'reset'">
+              <label class="mb-1 block text-sm font-medium text-gray-700 dark:text-gray-300"
+                >重置次数</label
+              >
+              <input
+                v-model.number="newCard.resetCount"
+                class="block w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-blue-500 focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-700 dark:text-white"
+                min="1"
+                type="number"
+              />
             </div>
 
             <div>
@@ -675,14 +664,7 @@
                 <code class="font-mono text-sm text-gray-900 dark:text-white">{{ card.code }}</code>
               </div>
               <span class="text-xs text-gray-500 dark:text-gray-400">
-                <template v-if="card.type === 'quota' || card.type === 'combo'">
-                  ${{ card.quotaAmount }}
-                </template>
-                <template v-if="card.type === 'combo'"> + </template>
-                <template v-if="card.type === 'time' || card.type === 'combo'">
-                  {{ card.timeAmount }}
-                  {{ card.timeUnit === 'hours' ? '小时' : card.timeUnit === 'days' ? '天' : '月' }}
-                </template>
+                {{ formatCardEffect(card) }}
               </span>
             </div>
           </div>
@@ -866,6 +848,7 @@ const newCard = ref({
   quotaAmount: 10,
   timeAmount: 30,
   timeUnit: 'days',
+  resetCount: 1,
   count: 1,
   note: ''
 })
@@ -938,6 +921,68 @@ const changePageSize = () => {
   loadCards()
 }
 
+const getCardTypeLabel = (type) => {
+  if (type === 'quota') return '额度卡'
+  if (type === 'time') return '时间卡'
+  if (type === 'reset') return '重置卡'
+  return '组合卡'
+}
+
+const getCardTypeBadgeClass = (type) => {
+  if (type === 'quota') return 'bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300'
+  if (type === 'time') return 'bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300'
+  if (type === 'reset')
+    return 'bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300'
+  return 'bg-purple-100 text-purple-800 dark:bg-purple-900/30 dark:text-purple-300'
+}
+
+const formatTimeAmount = (timeAmount, timeUnit) => {
+  return `${timeAmount}${timeUnit === 'hours' ? '小时' : timeUnit === 'days' ? '天' : '月'}`
+}
+
+const formatCardEffect = (card) => {
+  const parts = []
+  if (card.type === 'quota' || card.type === 'combo') {
+    parts.push(`$${card.quotaAmount}`)
+  }
+  if (card.type === 'time' || card.type === 'combo') {
+    parts.push(formatTimeAmount(card.timeAmount, card.timeUnit))
+  }
+  if (card.type === 'reset') {
+    parts.push(`重置 ${card.resetCount} 次`)
+  }
+  return parts.join(' + ')
+}
+
+const formatRedemptionEffect = (redemption) => {
+  const parts = []
+  if (redemption.quotaAdded > 0) {
+    parts.push(`额度 +$${redemption.quotaAdded}`)
+  }
+  if (redemption.timeAdded > 0) {
+    parts.push(`有效期 +${formatTimeAmount(redemption.timeAdded, redemption.timeUnit)}`)
+  }
+  if (redemption.resetCreditsAdded > 0) {
+    parts.push(`重置次数 +${redemption.resetCreditsAdded}`)
+  }
+  return parts.join(' + ')
+}
+
+const buildCardDownloadLabel = (card) => {
+  const parts = []
+  if (card.type === 'quota' || card.type === 'combo') {
+    parts.push(`$${card.quotaAmount}`)
+  }
+  if (card.type === 'time' || card.type === 'combo') {
+    const unitMap = { hours: 'h', days: 'd', months: 'm' }
+    parts.push(`${card.timeAmount}${unitMap[card.timeUnit] || card.timeUnit}`)
+  }
+  if (card.type === 'reset') {
+    parts.push(`reset${card.resetCount}`)
+  }
+  return parts.join('_')
+}
+
 const createCard = async () => {
   creating.value = true
   const result = await httpApis.createQuotaCardApi(newCard.value)
@@ -972,20 +1017,7 @@ const downloadCards = () => {
   if (createdCards.value.length === 0) return
 
   const content = createdCards.value
-    .map((card) => {
-      let label = ''
-      if (card.type === 'quota' || card.type === 'combo') {
-        label += `$${card.quotaAmount}`
-      }
-      if (card.type === 'combo') {
-        label += '_'
-      }
-      if (card.type === 'time' || card.type === 'combo') {
-        const unitMap = { hours: 'h', days: 'd', months: 'm' }
-        label += `${card.timeAmount}${unitMap[card.timeUnit] || card.timeUnit}`
-      }
-      return `${label} ${card.code}`
-    })
+    .map((card) => `${buildCardDownloadLabel(card)} ${card.code}`)
     .join('\n')
 
   const blob = new Blob([content], { type: 'text/plain;charset=utf-8' })
@@ -1009,14 +1041,7 @@ const copyAllCards = async () => {
   if (createdCards.value.length === 0) return
 
   const content = createdCards.value.map((card) => card.code).join('\n')
-
-  try {
-    await navigator.clipboard.writeText(content)
-    showToast('已复制所有卡号', 'success')
-  } catch (error) {
-    console.error('Failed to copy:', error)
-    showToast('复制失败', 'error')
-  }
+  await copyText(content, '已复制所有卡号')
 }
 
 const deleteCard = async (card) => {

@@ -76,9 +76,10 @@ class QuotaCardService {
   /**
    * 创建额度卡/时间卡
    * @param {Object} options - 卡配置
-   * @param {string} options.type - 卡类型：'quota' | 'time' | 'combo'
+   * @param {string} options.type - 卡类型：'quota' | 'time' | 'combo' | 'reset'
    * @param {number} options.quotaAmount - CC 额度数量（quota/combo 类型必填）
    * @param {number} options.timeAmount - 时间数量（time/combo 类型必填）
+   * @param {number} options.resetCount - 重置次数（reset 类型必填）
    * @param {string} options.timeUnit - 时间单位：'hours' | 'days' | 'months'
    * @param {string} options.expiresAt - 卡本身的有效期（可选）
    * @param {string} options.note - 备注
@@ -92,13 +93,14 @@ class QuotaCardService {
         quotaAmount = 0,
         timeAmount = 0,
         timeUnit = 'days',
+        resetCount = 0,
         expiresAt = null,
         note = '',
         createdBy = 'admin'
       } = options
 
       // 验证
-      if (!['quota', 'time', 'combo'].includes(type)) {
+      if (!['quota', 'time', 'combo', 'reset'].includes(type)) {
         throw new Error('Invalid card type')
       }
 
@@ -108,6 +110,10 @@ class QuotaCardService {
 
       if ((type === 'time' || type === 'combo') && (!timeAmount || timeAmount <= 0)) {
         throw new Error('timeAmount is required for time/combo cards')
+      }
+
+      if (type === 'reset' && (!resetCount || resetCount <= 0)) {
+        throw new Error('resetCount is required for reset cards')
       }
 
       const cardId = uuidv4()
@@ -120,6 +126,7 @@ class QuotaCardService {
         quotaAmount: String(quotaAmount || 0),
         timeAmount: String(timeAmount || 0),
         timeUnit: timeUnit || 'days',
+        resetCount: String(resetCount || 0),
         status: 'unused', // unused | redeemed | revoked | expired
         createdBy,
         createdAt: new Date().toISOString(),
@@ -156,6 +163,7 @@ class QuotaCardService {
         quotaAmount: parseFloat(quotaAmount || 0),
         timeAmount: parseInt(timeAmount || 0),
         timeUnit,
+        resetCount: parseInt(resetCount || 0),
         status: 'unused',
         createdBy,
         createdAt: cardData.createdAt,
@@ -217,6 +225,7 @@ class QuotaCardService {
         quotaAmount: parseFloat(cardData.quotaAmount || 0),
         timeAmount: parseInt(cardData.timeAmount || 0),
         timeUnit: cardData.timeUnit,
+        resetCount: parseInt(cardData.resetCount || 0),
         status: cardData.status,
         createdBy: cardData.createdBy,
         createdAt: cardData.createdAt,
@@ -334,6 +343,7 @@ class QuotaCardService {
       let afterExpiry = beforeExpiry
       let quotaAdded = 0
       let timeAdded = 0
+      let resetCreditsAdded = 0
       let actualTimeUnit = card.timeUnit // 实际使用的时间单位（截断时会改为 days）
       const warnings = [] // 截断警告信息
 
@@ -415,6 +425,11 @@ class QuotaCardService {
         }
       }
 
+      if (card.type === 'reset') {
+        const result = await apiKeyService.addDailyResetCredits(apiKeyId, card.resetCount)
+        resetCreditsAdded = result.addedCredits
+      }
+
       // 更新卡状态
       await redis.client.hset(`${this.CARD_PREFIX}${card.id}`, {
         status: 'redeemed',
@@ -441,6 +456,7 @@ class QuotaCardService {
         apiKeyName: keyData.name || '',
         quotaAdded: String(quotaAdded),
         timeAdded: String(timeAdded),
+        resetCreditsAdded: String(resetCreditsAdded),
         timeUnit: actualTimeUnit,
         beforeLimit: String(beforeLimit),
         afterLimit: String(afterLimit),
@@ -467,6 +483,7 @@ class QuotaCardService {
         cardType: card.type,
         quotaAdded,
         timeAdded,
+        resetCreditsAdded,
         timeUnit: actualTimeUnit,
         beforeLimit,
         afterLimit,
@@ -514,13 +531,23 @@ class QuotaCardService {
       // 注意：时间卡撤销比较复杂，这里简化处理，不回退时间
       // 如果需要回退时间，可以在这里添加逻辑
 
+      let actualResetCreditsDeducted = 0
+      if (parseInt(redemptionData.resetCreditsAdded || 0) > 0) {
+        const result = await apiKeyService.deductDailyResetCredits(
+          redemptionData.apiKeyId,
+          parseInt(redemptionData.resetCreditsAdded || 0)
+        )
+        actualResetCreditsDeducted = result.actualDeducted
+      }
+
       // 更新核销记录状态
       await redis.client.hset(`${this.REDEMPTION_PREFIX}${redemptionId}`, {
         status: 'revoked',
         revokedAt: now,
         revokedBy,
         revokeReason: reason,
-        actualDeducted: String(actualDeducted)
+        actualDeducted: String(actualDeducted),
+        actualResetCreditsDeducted: String(actualResetCreditsDeducted)
       })
 
       // 更新卡状态
@@ -543,6 +570,7 @@ class QuotaCardService {
         redemptionId,
         cardCode: redemptionData.cardCode,
         actualDeducted,
+        actualResetCreditsDeducted,
         reason
       }
     } catch (error) {
@@ -587,6 +615,7 @@ class QuotaCardService {
             apiKeyName: data.apiKeyName,
             quotaAdded: parseFloat(data.quotaAdded || 0),
             timeAdded: parseInt(data.timeAdded || 0),
+            resetCreditsAdded: parseInt(data.resetCreditsAdded || 0),
             timeUnit: data.timeUnit,
             beforeLimit: parseFloat(data.beforeLimit || 0),
             afterLimit: parseFloat(data.afterLimit || 0),
@@ -597,7 +626,8 @@ class QuotaCardService {
             revokedAt: data.revokedAt,
             revokedBy: data.revokedBy,
             revokeReason: data.revokeReason,
-            actualDeducted: parseFloat(data.actualDeducted || 0)
+            actualDeducted: parseFloat(data.actualDeducted || 0),
+            actualResetCreditsDeducted: parseInt(data.actualResetCreditsDeducted || 0)
           })
         }
       }

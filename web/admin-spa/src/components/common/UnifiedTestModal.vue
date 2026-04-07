@@ -387,7 +387,7 @@ const apikeyServiceConfigs = {
   },
   openai: {
     name: 'OpenAI (Codex)',
-    endpoint: '/api-key/test-openai',
+    endpoint: '/openai/responses',
     defaultModel: 'gpt-5',
     displayEndpoint: '/openai/responses'
   }
@@ -552,6 +552,32 @@ const startTest = () => {
       }
     )
   } else {
+    if (props.serviceType === 'openai') {
+      const endpoint = `${APP_CONFIG.apiPrefix}${apikeyServiceConfig.value.endpoint}`
+      state.sendTestRequest(
+        endpoint,
+        {
+          model: selectedModel.value,
+          input: [
+            {
+              role: 'user',
+              content: testPrompt.value
+            }
+          ],
+          max_output_tokens: maxTokens.value,
+          stream: true
+        },
+        {
+          useSSE: true,
+          sseMode: 'openaiResponses',
+          headers: {
+            'x-api-key': props.apiKeyValue
+          }
+        }
+      )
+      return
+    }
+
     const endpoint = `${APP_CONFIG.apiPrefix}/apiStats${apikeyServiceConfig.value.endpoint}`
     state.sendTestRequest(
       endpoint,

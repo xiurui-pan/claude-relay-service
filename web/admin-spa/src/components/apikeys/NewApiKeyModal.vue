@@ -93,7 +93,7 @@
               </div>
             </div>
             <p class="mt-2 text-xs text-gray-500 dark:text-gray-400">
-              点击眼睛图标切换显示模式，使用下方按钮复制环境变量配置
+              点击眼睛图标切换显示模式，使用下方按钮复制 Codex 配置
             </p>
           </div>
         </div>
@@ -113,7 +113,7 @@
               @click="copyFullConfig"
             >
               <i class="fas fa-copy" />
-              复制Claude配置
+              复制Codex配置
             </button>
           </div>
           <button
@@ -142,7 +142,7 @@
 </template>
 
 <script setup>
-import { ref, computed } from 'vue'
+import { ref } from 'vue'
 import { showToast } from '@/utils/tools'
 import ConfirmModal from '@/components/common/ConfirmModal.vue'
 
@@ -190,41 +190,6 @@ const handleCancelModal = () => {
   confirmResolve.value?.(false)
 }
 
-// 获取 API Base URL 前缀
-const getBaseUrlPrefix = () => {
-  // 优先使用环境变量配置的自定义前缀
-  const customPrefix = import.meta.env.VITE_API_BASE_PREFIX
-  if (customPrefix) {
-    // 去除末尾的斜杠
-    return customPrefix.replace(/\/$/, '')
-  }
-
-  // 否则使用当前浏览器访问地址
-  if (typeof window !== 'undefined') {
-    const protocol = window.location.protocol // http: 或 https:
-    const host = window.location.host // 域名和端口
-    // 提取协议和主机部分，去除路径
-    let origin = protocol + '//' + host
-
-    // 如果当前URL包含路径，只取协议+主机部分
-    const currentUrl = window.location.href
-    const pathStart = currentUrl.indexOf('/', 8) // 跳过 http:// 或 https://
-    if (pathStart !== -1) {
-      origin = currentUrl.substring(0, pathStart)
-    }
-
-    return origin
-  }
-
-  // 服务端渲染或其他情况的回退
-  return ''
-}
-
-// 计算完整的 API Base URL
-const currentBaseUrl = computed(() => {
-  return getBaseUrlPrefix() + '/api'
-})
-
 // 切换密钥可见性
 const toggleKeyVisibility = () => {
   showFullKey.value = !showFullKey.value
@@ -267,7 +232,7 @@ const copyTextWithFallback = async (text, successMessage) => {
   }
 }
 
-// 复制完整配置（包含提示信息）
+// 复制 Codex 配置（包含提示信息）
 const copyFullConfig = async () => {
   const key = props.apiKey.apiKey || props.apiKey.key || ''
   if (!key) {
@@ -275,11 +240,10 @@ const copyFullConfig = async () => {
     return
   }
 
-  // 构建环境变量配置格式
-  const configText = `export ANTHROPIC_BASE_URL="${currentBaseUrl.value}"
-export ANTHROPIC_AUTH_TOKEN="${key}"`
+  const configText = `API_KEY: ${key}
+http://liliray.xyz:13000 在这里输入api key可以查看配置信息`
 
-  await copyTextWithFallback(configText, '配置信息已复制到剪贴板')
+  await copyTextWithFallback(configText, 'Codex 配置信息已复制到剪贴板')
 }
 
 // 仅复制密钥

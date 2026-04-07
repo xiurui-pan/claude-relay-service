@@ -19,7 +19,7 @@
                   stroke-width="2"
                 />
               </svg>
-              <span class="ml-2 text-xl font-bold text-gray-900 dark:text-white">Claude Relay</span>
+              <span class="ml-2 text-xl font-bold text-gray-900 dark:text-white">Codex Relay</span>
             </div>
             <div class="ml-10">
               <div class="flex items-baseline space-x-4">
@@ -96,7 +96,7 @@
         <div>
           <h1 class="text-2xl font-semibold text-gray-900 dark:text-white">Dashboard Overview</h1>
           <p class="mt-2 text-sm text-gray-600 dark:text-gray-400">
-            Welcome to your Claude Relay dashboard
+            Welcome to your Codex Relay dashboard
           </p>
         </div>
 

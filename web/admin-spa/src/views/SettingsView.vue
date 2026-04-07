@@ -111,7 +111,7 @@
                       v-model="oemSettings.siteName"
                       class="form-input w-full max-w-md dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200"
                       maxlength="100"
-                      placeholder="Claude Relay Service"
+                      placeholder="Codex Relay Service"
                       type="text"
                     />
                     <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
@@ -339,7 +339,7 @@
                 v-model="oemSettings.siteName"
                 class="form-input w-full dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200"
                 maxlength="100"
-                placeholder="Claude Relay Service"
+                placeholder="Codex Relay Service"
                 type="text"
               />
             </div>
@@ -737,6 +737,148 @@
           </div>
 
           <div v-else>
+            <div
+              class="mb-6 rounded-lg bg-white/80 p-6 shadow-lg backdrop-blur-sm dark:bg-gray-800/80"
+            >
+              <div class="flex items-center justify-between">
+                <div>
+                  <div class="flex items-center">
+                    <div
+                      class="mr-3 flex h-10 w-10 items-center justify-center rounded-full bg-gradient-to-br from-emerald-500 to-teal-600 text-white shadow-lg"
+                    >
+                      <i class="fas fa-microchip"></i>
+                    </div>
+                    <div>
+                      <h2 class="text-lg font-semibold text-gray-800 dark:text-gray-200">
+                        本地 Qwopus 模型
+                      </h2>
+                      <p class="mt-1 text-sm text-gray-600 dark:text-gray-400">
+                        打开后会启动本地 llama-server 和 CCR，并在 CRS 中维护一个 Claude Console
+                        账户；关闭后会停掉本地服务并释放 GPU。
+                      </p>
+                    </div>
+                  </div>
+                </div>
+                <label class="relative inline-flex cursor-pointer items-center">
+                  <input
+                    :checked="localModelStatus.enabled"
+                    class="peer sr-only"
+                    type="checkbox"
+                    @change="toggleLocalModel"
+                  />
+                  <div
+                    class="peer h-6 w-11 rounded-full bg-gray-200 after:absolute after:left-[2px] after:top-[2px] after:h-5 after:w-5 after:rounded-full after:border after:border-gray-300 after:bg-white after:transition-all after:content-[''] peer-checked:bg-emerald-500 peer-checked:after:translate-x-full peer-checked:after:border-white peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-emerald-300 dark:border-gray-600 dark:bg-gray-700 dark:peer-focus:ring-emerald-800"
+                  ></div>
+                </label>
+              </div>
+
+              <div v-if="localModelLoading" class="mt-4 text-sm text-gray-500 dark:text-gray-400">
+                正在加载本地模型状态...
+              </div>
+
+              <div v-else class="mt-6 grid gap-4 lg:grid-cols-3">
+                <div class="rounded-lg bg-emerald-50 p-4 dark:bg-emerald-900/20">
+                  <div class="flex items-center justify-between">
+                    <span class="text-sm font-medium text-emerald-700 dark:text-emerald-300"
+                      >总开关</span
+                    >
+                    <span
+                      class="rounded px-2 py-1 text-xs font-semibold"
+                      :class="
+                        localModelStatus.enabled
+                          ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-800/50 dark:text-emerald-200'
+                          : 'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300'
+                      "
+                    >
+                      {{ localModelStatus.enabled ? '已启用' : '已关闭' }}
+                    </span>
+                  </div>
+                  <p class="mt-3 text-xs text-emerald-700/80 dark:text-emerald-300/80">
+                    {{
+                      localModelToggling
+                        ? '正在切换状态，请稍候...'
+                        : '开关会同步控制账户和本地进程'
+                    }}
+                  </p>
+                </div>
+
+                <div class="rounded-lg bg-blue-50 p-4 dark:bg-blue-900/20">
+                  <div class="flex items-center justify-between">
+                    <span class="text-sm font-medium text-blue-700 dark:text-blue-300"
+                      >llama-server</span
+                    >
+                    <span
+                      class="rounded px-2 py-1 text-xs font-semibold"
+                      :class="
+                        localModelStatus.llama?.running
+                          ? 'bg-blue-100 text-blue-700 dark:bg-blue-800/50 dark:text-blue-200'
+                          : 'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300'
+                      "
+                    >
+                      {{ localModelStatus.llama?.running ? '运行中' : '未运行' }}
+                    </span>
+                  </div>
+                  <p class="mt-3 break-all text-xs text-blue-700/80 dark:text-blue-300/80">
+                    {{ localModelStatus.llama?.url || '-' }}
+                  </p>
+                </div>
+
+                <div class="rounded-lg bg-purple-50 p-4 dark:bg-purple-900/20">
+                  <div class="flex items-center justify-between">
+                    <span class="text-sm font-medium text-purple-700 dark:text-purple-300"
+                      >CCR</span
+                    >
+                    <span
+                      class="rounded px-2 py-1 text-xs font-semibold"
+                      :class="
+                        localModelStatus.ccr?.running
+                          ? 'bg-purple-100 text-purple-700 dark:bg-purple-800/50 dark:text-purple-200'
+                          : 'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300'
+                      "
+                    >
+                      {{ localModelStatus.ccr?.running ? '运行中' : '未运行' }}
+                    </span>
+                  </div>
+                  <p class="mt-3 break-all text-xs text-purple-700/80 dark:text-purple-300/80">
+                    {{ localModelStatus.ccr?.url || '-' }}
+                  </p>
+                </div>
+              </div>
+
+              <div class="mt-4 rounded-lg bg-gray-50 p-4 dark:bg-gray-700/40">
+                <div class="grid gap-3 text-sm text-gray-700 dark:text-gray-300 md:grid-cols-2">
+                  <div>
+                    <span class="font-medium">CCR 模型别名：</span>
+                    <code class="rounded bg-gray-100 px-1 dark:bg-gray-800">{{
+                      localModelStatus.ccr?.modelAlias || 'qwopus-27b-q6'
+                    }}</code>
+                  </div>
+                  <div>
+                    <span class="font-medium">CRS 账户：</span>
+                    {{ localModelStatus.account?.name || '未创建' }}
+                  </div>
+                  <div>
+                    <span class="font-medium">llama 日志：</span>
+                    <span class="break-all">{{ localModelStatus.llama?.logFile || '-' }}</span>
+                  </div>
+                  <div>
+                    <span class="font-medium">CCR 日志：</span>
+                    <span class="break-all">{{ localModelStatus.ccr?.logFile || '-' }}</span>
+                  </div>
+                </div>
+                <div class="mt-4 flex gap-3">
+                  <button
+                    class="rounded-lg bg-gray-900 px-4 py-2 text-sm font-medium text-white transition hover:bg-black disabled:opacity-50 dark:bg-gray-100 dark:text-gray-900 dark:hover:bg-white"
+                    :disabled="localModelLoading || localModelToggling"
+                    @click="loadLocalModelStatus"
+                  >
+                    <i class="fas fa-rotate mr-2"></i>
+                    刷新状态
+                  </button>
+                </div>
+              </div>
+            </div>
+
             <!-- Claude Code 客户端限制 -->
             <div
               class="mb-6 rounded-lg bg-white/80 p-6 shadow-lg backdrop-blur-sm dark:bg-gray-800/80"
@@ -1899,6 +2041,7 @@ const savingPlatform = ref(false)
 // Webhook 配置
 const DEFAULT_WEBHOOK_NOTIFICATION_TYPES = {
   accountAnomaly: true,
+  accountRateLimited: true,
   quotaWarning: true,
   systemError: true,
   securityAlert: true,
@@ -1932,6 +2075,25 @@ const claudeConfig = ref({
   concurrentRequestQueueTimeoutMs: 10000,
   updatedAt: null,
   updatedBy: null
+})
+
+const localModelLoading = ref(false)
+const localModelToggling = ref(false)
+const localModelStatus = ref({
+  enabled: false,
+  account: null,
+  llama: {
+    running: false,
+    url: '',
+    modelPath: '',
+    logFile: ''
+  },
+  ccr: {
+    running: false,
+    url: '',
+    modelAlias: '',
+    logFile: ''
+  }
 })
 
 // 服务倍率配置
@@ -1990,7 +2152,7 @@ const sectionWatcher = watch(activeSection, async (newSection) => {
   if (newSection === 'webhook') {
     await loadWebhookConfig()
   } else if (newSection === 'claude') {
-    await loadClaudeConfig()
+    await Promise.all([loadClaudeConfig(), loadLocalModelStatus()])
   } else if (newSection === 'serviceRates') {
     await loadServiceRates()
   }
@@ -2117,6 +2279,9 @@ const isPlatformFormValid = computed(() => {
 onMounted(async () => {
   try {
     await settingsStore.loadOemSettings()
+    if (activeSection.value === 'claude') {
+      await Promise.all([loadClaudeConfig(), loadLocalModelStatus()])
+    }
     if (activeSection.value === 'webhook') {
       await loadWebhookConfig()
     }
@@ -2177,6 +2342,56 @@ const loadWebhookConfig = async () => {
     if (!isMounted.value) return
     showToast('获取webhook配置失败', 'error')
     console.error(error)
+  }
+}
+
+const loadLocalModelStatus = async () => {
+  if (!isMounted.value) return
+
+  localModelLoading.value = true
+  try {
+    const response = await httpApis.getLocalModelStatusApi()
+    if (response.success && isMounted.value) {
+      localModelStatus.value = {
+        ...localModelStatus.value,
+        ...(response.data || {})
+      }
+    }
+  } catch (error) {
+    if (!isMounted.value) return
+    showToast('获取本地模型状态失败', 'error')
+    console.error(error)
+  } finally {
+    if (isMounted.value) {
+      localModelLoading.value = false
+    }
+  }
+}
+
+const toggleLocalModel = async () => {
+  if (!isMounted.value || localModelToggling.value) return
+
+  const nextEnabled = !localModelStatus.value.enabled
+  localModelToggling.value = true
+
+  try {
+    const response = await httpApis.setLocalModelEnabledApi(nextEnabled)
+    if (response.success && isMounted.value) {
+      localModelStatus.value = {
+        ...localModelStatus.value,
+        ...(response.data || {})
+      }
+      showToast(nextEnabled ? '本地模型已启动' : '本地模型已停止', 'success')
+    }
+  } catch (error) {
+    if (!isMounted.value) return
+    const message = error?.response?.data?.message || '切换本地模型状态失败'
+    showToast(message, 'error')
+    console.error(error)
+  } finally {
+    if (isMounted.value) {
+      localModelToggling.value = false
+    }
   }
 }
 
@@ -2798,6 +3013,7 @@ const formatTelegramToken = (token) => {
 const getNotificationTypeName = (type) => {
   const names = {
     accountAnomaly: '账号异常',
+    accountRateLimited: '账号异常-限流',
     quotaWarning: '配额警告',
     systemError: '系统错误',
     securityAlert: '安全警报',
@@ -2810,6 +3026,7 @@ const getNotificationTypeName = (type) => {
 const getNotificationTypeDescription = (type) => {
   const descriptions = {
     accountAnomaly: '账号状态异常、认证失败等',
+    accountRateLimited: '账号触发限流，如 OPENAI_RATE_LIMITED 这类错误',
     quotaWarning: 'API调用配额不足警告',
     systemError: '系统运行错误和故障',
     securityAlert: '安全相关的警报通知',

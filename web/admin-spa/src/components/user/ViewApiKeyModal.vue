@@ -210,7 +210,9 @@ const emit = defineEmits(['close'])
 
 const showFullKey = ref(false)
 const usageTotal = computed(() => props.apiKey?.usage?.total || {})
-const usageRequests = computed(() => usageTotal.value.requests ?? props.apiKey?.usage?.requests ?? 0)
+const usageRequests = computed(
+  () => usageTotal.value.requests ?? props.apiKey?.usage?.requests ?? 0
+)
 const usageInputTokens = computed(
   () => usageTotal.value.inputTokens ?? props.apiKey?.usage?.inputTokens ?? 0
 )

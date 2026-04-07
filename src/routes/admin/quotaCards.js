@@ -106,7 +106,7 @@ router.get('/quota-cards/:id', authenticateAdmin, async (req, res) => {
 // 创建额度卡
 router.post('/quota-cards', authenticateAdmin, async (req, res) => {
   try {
-    const { type, quotaAmount, timeAmount, timeUnit, expiresAt, note, count = 1 } = req.body
+    const { type, quotaAmount, timeAmount, timeUnit, resetCount, expiresAt, note, count = 1 } = req.body
 
     if (!type) {
       return res.status(400).json({
@@ -121,6 +121,7 @@ router.post('/quota-cards', authenticateAdmin, async (req, res) => {
       quotaAmount: parseFloat(quotaAmount || 0),
       timeAmount: parseInt(timeAmount || 0),
       timeUnit: timeUnit || 'days',
+      resetCount: parseInt(resetCount || 0),
       expiresAt,
       note,
       createdBy

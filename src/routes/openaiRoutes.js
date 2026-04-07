@@ -15,6 +15,16 @@ const ProxyHelper = require('../utils/proxyHelper')
 const { updateRateLimitCounters } = require('../utils/rateLimitHelper')
 const { IncrementalSSEParser } = require('../utils/sseParser')
 const { getSafeMessage } = require('../utils/errorSanitizer')
+const upstreamErrorHelper = require('../utils/upstreamErrorHelper')
+const { isUnstableUpstreamError } = require('../utils/unstableUpstreamHelper')
+const {
+  buildOpenAIStreamErrorPayload,
+  getOpenAIStreamErrorInfo,
+  isRetryableOpenAIInternalMessage,
+  classifyOpenAIStreamProbeEvent,
+  isMeaningfulOpenAIStreamEvent,
+  observeInitialOpenAIStream
+} = require('../utils/openaiStreamRetryProbe')
 
 // Codex CLI 系统提示词（非 Codex CLI 客户端请求时注入，统一端点也使用）
 const CODEX_CLI_INSTRUCTIONS =
@@ -110,6 +120,171 @@ function extractCodexUsageHeaders(headers) {
 }
 
 const MAX_OPENAI_RATE_LIMIT_RETRIES = 2
+const MAX_OPENAI_RESPONSES_UPSTREAM_SWITCH_RETRIES = 2
+const MAX_OPENAI_UPSTREAM_SWITCH_RETRIES = 2
+const MAX_OPENAI_SAME_ACCOUNT_RETRIES = 2
+const SAME_ACCOUNT_RETRY_DELAY_MS = 800
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+function sendOpenAIErrorResponse(res, isStream, status, payload) {
+  if (isStream) {
+    res.status(status)
+    res.setHeader('Content-Type', 'text/event-stream')
+    res.setHeader('Cache-Control', 'no-cache')
+    res.setHeader('Connection', 'keep-alive')
+    res.write(`data: ${JSON.stringify(payload)}\n\n`)
+    res.end()
+    return res
+  }
+
+  return res.status(status).json(payload)
+}
+
+async function collectErrorStreamBody(stream, { initialWaitMs = 200, idleWaitMs = 50 } = {}) {
+  if (!stream || typeof stream.on !== 'function') {
+    return ''
+  }
+
+  return await new Promise((resolve, reject) => {
+    const chunks = []
+    let resolved = false
+    let initialTimer = null
+    let idleTimer = null
+
+    const cleanup = () => {
+      if (initialTimer) {
+        clearTimeout(initialTimer)
+      }
+      if (idleTimer) {
+        clearTimeout(idleTimer)
+      }
+      stream.removeListener?.('data', onData)
+      stream.removeListener?.('end', onEnd)
+      stream.removeListener?.('error', onError)
+    }
+
+    const destroyStream = () => {
+      if (typeof stream.destroy !== 'function' || stream.destroyed || stream.readableEnded) {
+        return
+      }
+      try {
+        stream.destroy()
+      } catch (_) {
+        //
+      }
+    }
+
+    const finish = () => {
+      if (resolved) {
+        return
+      }
+      resolved = true
+      cleanup()
+      destroyStream()
+      resolve(Buffer.concat(chunks).toString())
+    }
+
+    const onData = (chunk) => {
+      if (resolved) {
+        return
+      }
+      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)))
+      if (initialTimer) {
+        clearTimeout(initialTimer)
+        initialTimer = null
+      }
+      if (idleTimer) {
+        clearTimeout(idleTimer)
+      }
+      idleTimer = setTimeout(finish, idleWaitMs)
+    }
+
+    const onEnd = () => finish()
+    const onError = (error) => {
+      if (chunks.length > 0) {
+        finish()
+        return
+      }
+      if (resolved) {
+        return
+      }
+      resolved = true
+      cleanup()
+      destroyStream()
+      reject(error)
+    }
+
+    stream.on('data', onData)
+    stream.on('end', onEnd)
+    stream.on('error', onError)
+    initialTimer = setTimeout(finish, initialWaitMs)
+  })
+}
+
+async function parseOpenAIErrorResponse(upstream, isStream, statusCode) {
+  let errorData = null
+
+  try {
+    if (isStream && upstream?.data && typeof upstream.data.on === 'function') {
+      const fullResponse = await collectErrorStreamBody(upstream.data)
+      if (!fullResponse) {
+        return null
+      }
+      try {
+        errorData = JSON.parse(fullResponse)
+      } catch (parseError) {
+        logger.error(`Failed to parse ${statusCode} error response:`, parseError)
+        logger.debug(`Raw ${statusCode} response:`, fullResponse)
+        errorData = {
+          error: {
+            message:
+              (typeof fullResponse === 'string' && fullResponse.trim()) ||
+              (statusCode === 402 ? 'Payment required' : 'Unauthorized')
+          }
+        }
+      }
+    } else {
+      errorData = upstream?.data
+    }
+  } catch (parseError) {
+    logger.error(`⚠️ Failed to handle ${statusCode} error response:`, parseError)
+  }
+
+  return errorData
+}
+
+function buildOpenAIUnauthorizedReason(statusCode, errorData, fallbackMessage = null) {
+  const statusLabel = statusCode === 401 ? '401错误' : '402错误'
+  const extraHint = statusCode === 402 ? '，可能欠费' : ''
+  let reason = `OpenAI账号认证失败（${statusLabel}${extraHint}）`
+
+  const messageCandidate =
+    errorData &&
+    typeof errorData === 'object' &&
+    errorData.error &&
+    typeof errorData.error.message === 'string' &&
+    errorData.error.message.trim()
+      ? errorData.error.message.trim()
+      : errorData &&
+          typeof errorData === 'object' &&
+          typeof errorData.message === 'string' &&
+          errorData.message.trim()
+        ? errorData.message.trim()
+        : typeof errorData === 'string' && errorData.trim()
+          ? errorData.trim()
+          : typeof fallbackMessage === 'string' && fallbackMessage.trim()
+            ? fallbackMessage.trim()
+            : null
+
+  if (messageCandidate) {
+    reason = `OpenAI账号认证失败（${statusLabel}${extraHint}）：${messageCandidate}`
+  }
+
+  return reason
+}
 
 async function parseOpenAIRateLimitResponse(upstream, isStream) {
   let resetsInSeconds = null
@@ -117,15 +292,10 @@ async function parseOpenAIRateLimitResponse(upstream, isStream) {
 
   try {
     if (isStream && upstream.data) {
-      const chunks = []
-      await new Promise((resolve, reject) => {
-        upstream.data.on('data', (chunk) => chunks.push(chunk))
-        upstream.data.on('end', resolve)
-        upstream.data.on('error', reject)
-        setTimeout(resolve, 5000)
-      })
-
-      const fullResponse = Buffer.concat(chunks).toString()
+      const fullResponse = await collectErrorStreamBody(upstream.data)
+      if (!fullResponse) {
+        return { resetsInSeconds, errorData }
+      }
       try {
         errorData = JSON.parse(fullResponse)
       } catch (error) {
@@ -154,15 +324,25 @@ async function parseOpenAIRateLimitResponse(upstream, isStream) {
 }
 
 function buildOpenAIRateLimitErrorResponse(errorData, resetsInSeconds) {
-  return (
-    errorData || {
-      error: {
-        type: 'usage_limit_reached',
-        message: 'The usage limit has been reached',
-        resets_in_seconds: resetsInSeconds
-      }
-    }
-  )
+  const extractedResetsInSeconds =
+    errorData?.error?.resets_in_seconds || errorData?.error?.resets_in || resetsInSeconds || null
+  return upstreamErrorHelper.buildFriendlyRateLimitError(extractedResetsInSeconds)
+}
+
+function extractOpenAIErrorMessage(payload) {
+  if (!payload) {
+    return ''
+  }
+  if (typeof payload === 'string') {
+    return payload.trim()
+  }
+  if (typeof payload.error?.message === 'string') {
+    return payload.error.message.trim()
+  }
+  if (typeof payload.message === 'string') {
+    return payload.message.trim()
+  }
+  return ''
 }
 
 async function applyRateLimitTracking(
@@ -332,6 +512,12 @@ const handleResponses = async (req, res) => {
   let accessToken = null
   let rateLimitRetryCount = 0
   let lastRateLimitResponse = null
+  let openaiResponsesUpstreamSwitchRetryCount = 0
+  let unauthorizedRetryCount = 0
+  let openaiUpstreamSwitchRetryCount = 0
+  let streamProbeResult = null
+  let lastRetryableUpstreamResponse = null
+  const selectionState = { sharedCandidateAccounts: [] }
 
   try {
     // 从中间件获取 API Key 数据
@@ -415,13 +601,22 @@ const handleResponses = async (req, res) => {
     const excludedAccountIds = new Set()
 
     while (true) {
+      upstream = null
+      accountId = null
+      accountType = 'openai'
+      account = null
+      proxy = null
+      accessToken = null
+      streamProbeResult = null
+
       try {
         ;({ accessToken, accountId, accountType, proxy, account } = await getOpenAIAuthToken(
           apiKeyData,
           sessionId,
           requestedModel,
           {
-            excludedAccountIds: Array.from(excludedAccountIds)
+            excludedAccountIds: Array.from(excludedAccountIds),
+            selectionState
           }
         ))
       } catch (selectionError) {
@@ -431,16 +626,16 @@ const handleResponses = async (req, res) => {
             lastRateLimitResponse.errorData,
             lastRateLimitResponse.resetsInSeconds
           )
-          if (isStream) {
-            res.status(429)
-            res.setHeader('Content-Type', 'text/event-stream')
-            res.setHeader('Cache-Control', 'no-cache')
-            res.setHeader('Connection', 'keep-alive')
-            res.write(`data: ${JSON.stringify(errorResponse)}\n\n`)
-            res.end()
-          } else {
-            res.status(429).json(errorResponse)
-          }
+          sendOpenAIErrorResponse(res, isStream, 429, errorResponse)
+          return
+        }
+        if (lastRetryableUpstreamResponse) {
+          sendOpenAIErrorResponse(
+            res,
+            isStream,
+            lastRetryableUpstreamResponse.status || 502,
+            lastRetryableUpstreamResponse.payload
+          )
           return
         }
         throw selectionError
@@ -449,7 +644,8 @@ const handleResponses = async (req, res) => {
       if (accountType === 'openai-responses') {
         logger.info(`🔀 Using OpenAI-Responses relay service for account: ${account.name}`)
         const relayResult = await openaiResponsesRelayService.handleRequest(req, res, account, apiKeyData, {
-          returnRateLimitResult: true
+          returnRateLimitResult: true,
+          returnRetryableUpstreamResult: true
         })
 
         if (relayResult?.rateLimited) {
@@ -480,6 +676,31 @@ const handleResponses = async (req, res) => {
           rateLimitRetryCount += 1
           logger.warn(
             `🔄 Retrying OpenAI request with another account after OpenAI-Responses rate limit (${rateLimitRetryCount}/${MAX_OPENAI_RATE_LIMIT_RETRIES})`
+          )
+          continue
+        }
+
+        if (relayResult?.retryableUpstreamError) {
+          excludedAccountIds.add(account.id)
+          lastRetryableUpstreamResponse = {
+            status: relayResult.status || 502,
+            payload: relayResult.clientError
+          }
+
+          if (
+            openaiResponsesUpstreamSwitchRetryCount >= MAX_OPENAI_RESPONSES_UPSTREAM_SWITCH_RETRIES
+          ) {
+            return sendOpenAIErrorResponse(
+              res,
+              isStream,
+              relayResult.status || 502,
+              relayResult.clientError
+            )
+          }
+
+          openaiResponsesUpstreamSwitchRetryCount += 1
+          logger.warn(
+            `🔄 OpenAI-Responses 上游异常，切换下一个账号重试 (${openaiResponsesUpstreamSwitchRetryCount}/${MAX_OPENAI_RESPONSES_UPSTREAM_SWITCH_RETRIES})`
           )
           continue
         }
@@ -532,13 +753,141 @@ const handleResponses = async (req, res) => {
         ? 'https://chatgpt.com/backend-api/codex/responses/compact'
         : 'https://chatgpt.com/backend-api/codex/responses'
 
-      if (isStream) {
-        upstream = await axios.post(codexEndpoint, req.body, {
-          ...axiosConfig,
-          responseType: 'stream'
-        })
-      } else {
-        upstream = await axios.post(codexEndpoint, req.body, axiosConfig)
+      let sameAccountRetryCount = 0
+      let parsedRateLimitResult = null
+      let parsedUpstreamErrorData = null
+      let retryableNetworkError = null
+
+      while (true) {
+        parsedRateLimitResult = null
+        parsedUpstreamErrorData = null
+        retryableNetworkError = null
+
+        try {
+          if (isStream) {
+            upstream = await axios.post(codexEndpoint, req.body, {
+              ...axiosConfig,
+              responseType: 'stream'
+            })
+          } else {
+            upstream = await axios.post(codexEndpoint, req.body, axiosConfig)
+          }
+        } catch (requestError) {
+          if (!upstreamErrorHelper.isRetryableNetworkError(requestError)) {
+            throw requestError
+          }
+
+          retryableNetworkError = requestError
+          const networkStatus = upstreamErrorHelper.getRetryableNetworkStatus(requestError)
+
+          logger.warn('OpenAI retryable network error', {
+            accountId,
+            accountName: account?.name || accountId,
+            status: networkStatus,
+            code: requestError.code || requestError.cause?.code || '',
+            message: requestError.message || requestError.cause?.message || '',
+            sameAccountRetryCount,
+            maxSameAccountRetryCount: MAX_OPENAI_SAME_ACCOUNT_RETRIES
+          })
+
+          if (sameAccountRetryCount >= MAX_OPENAI_SAME_ACCOUNT_RETRIES) {
+            break
+          }
+
+          sameAccountRetryCount += 1
+          logger.warn(
+            `🔄 OpenAI 建连失败，准备重试当前账号 (${sameAccountRetryCount}/${MAX_OPENAI_SAME_ACCOUNT_RETRIES})`
+          )
+          await delay(SAME_ACCOUNT_RETRY_DELAY_MS * sameAccountRetryCount)
+          continue
+        }
+
+        if (upstream.status === 429) {
+          parsedRateLimitResult = await parseOpenAIRateLimitResponse(upstream, isStream)
+
+          logger.warn('OpenAI retryable rate limit error', {
+            accountId,
+            accountName: account?.name || accountId,
+            status: upstream.status,
+            sameAccountRetryCount,
+            maxSameAccountRetryCount: MAX_OPENAI_SAME_ACCOUNT_RETRIES,
+            resetsInSeconds: parsedRateLimitResult.resetsInSeconds || null
+          })
+
+          if (sameAccountRetryCount >= MAX_OPENAI_SAME_ACCOUNT_RETRIES) {
+            break
+          }
+
+          sameAccountRetryCount += 1
+          logger.warn(
+            `🔄 OpenAI 遇到 429，准备重试当前账号 (${sameAccountRetryCount}/${MAX_OPENAI_SAME_ACCOUNT_RETRIES})`
+          )
+          await delay(SAME_ACCOUNT_RETRY_DELAY_MS * sameAccountRetryCount)
+          continue
+        }
+
+        if (upstream.status >= 500) {
+          parsedUpstreamErrorData = await parseOpenAIErrorResponse(upstream, isStream, upstream.status)
+
+          if (
+            isUnstableUpstreamError(upstream.status, parsedUpstreamErrorData) ||
+            isRetryableOpenAIInternalMessage(extractOpenAIErrorMessage(parsedUpstreamErrorData))
+          ) {
+            logger.warn('OpenAI retryable upstream error', {
+              accountId,
+              accountName: account?.name || accountId,
+              status: upstream.status,
+              sameAccountRetryCount,
+              maxSameAccountRetryCount: MAX_OPENAI_SAME_ACCOUNT_RETRIES,
+              message: extractOpenAIErrorMessage(parsedUpstreamErrorData)
+            })
+
+            if (sameAccountRetryCount >= MAX_OPENAI_SAME_ACCOUNT_RETRIES) {
+              break
+            }
+
+            sameAccountRetryCount += 1
+            logger.warn(
+              `🔄 OpenAI 上游 ${upstream.status}，准备重试当前账号 (${sameAccountRetryCount}/${MAX_OPENAI_SAME_ACCOUNT_RETRIES})`
+            )
+            await delay(SAME_ACCOUNT_RETRY_DELAY_MS * sameAccountRetryCount)
+            continue
+          }
+        }
+
+        break
+      }
+
+      if (retryableNetworkError) {
+        const networkStatus = upstreamErrorHelper.getRetryableNetworkStatus(retryableNetworkError)
+
+        await upstreamErrorHelper
+          .markTempUnavailable(accountId, 'openai', networkStatus, null, {
+            source: isCompactRoute ? 'openai_network_compact' : 'openai_network',
+            message: retryableNetworkError.message || retryableNetworkError.cause?.message || ''
+          })
+          .catch(() => {})
+
+        excludedAccountIds.add(accountId)
+        lastRetryableUpstreamResponse = {
+          status: networkStatus,
+          payload: upstreamErrorHelper.buildFriendlyNetworkError(networkStatus)
+        }
+
+        if (openaiUpstreamSwitchRetryCount >= MAX_OPENAI_UPSTREAM_SWITCH_RETRIES) {
+          return sendOpenAIErrorResponse(
+            res,
+            isStream,
+            networkStatus,
+            lastRetryableUpstreamResponse.payload
+          )
+        }
+
+        openaiUpstreamSwitchRetryCount += 1
+        logger.warn(
+          `🔄 OpenAI 网络异常，切换下一个账号重试 (${openaiUpstreamSwitchRetryCount}/${MAX_OPENAI_UPSTREAM_SWITCH_RETRIES})`
+        )
+        continue
       }
 
       const codexUsageSnapshot = extractCodexUsageHeaders(upstream.headers)
@@ -550,125 +899,224 @@ const handleResponses = async (req, res) => {
         }
       }
 
-      if (upstream.status !== 429) {
-        break
-      }
+      if (upstream.status === 401 || upstream.status === 402) {
+        const unauthorizedStatus = upstream.status
+        const statusDescription = unauthorizedStatus === 401 ? 'Unauthorized' : 'Payment required'
+        logger.warn(
+          `🔐 ${statusDescription} error detected for OpenAI account ${accountId} (Codex API)`
+        )
 
-      logger.warn(`🚫 Rate limit detected for OpenAI account ${accountId} (Codex API)`)
-      const { resetsInSeconds, errorData } = await parseOpenAIRateLimitResponse(upstream, isStream)
+        const errorData = await parseOpenAIErrorResponse(upstream, isStream, unauthorizedStatus)
+        const reason = buildOpenAIUnauthorizedReason(unauthorizedStatus, errorData)
 
-      await unifiedOpenAIScheduler.markAccountRateLimited(
-        accountId,
-        'openai',
-        sessionHash,
-        resetsInSeconds
-      )
-
-      lastRateLimitResponse = { resetsInSeconds, errorData }
-      excludedAccountIds.add(accountId)
-
-      if (rateLimitRetryCount >= MAX_OPENAI_RATE_LIMIT_RETRIES) {
-        const errorResponse = buildOpenAIRateLimitErrorResponse(errorData, resetsInSeconds)
-        if (isStream) {
-          res.status(429)
-          res.setHeader('Content-Type', 'text/event-stream')
-          res.setHeader('Cache-Control', 'no-cache')
-          res.setHeader('Connection', 'keep-alive')
-          res.write(`data: ${JSON.stringify(errorResponse)}\n\n`)
-          res.end()
-        } else {
-          res.status(429).json(errorResponse)
+        try {
+          await unifiedOpenAIScheduler.markAccountUnauthorized(
+            accountId,
+            'openai',
+            sessionHash,
+            reason,
+            unauthorizedStatus
+          )
+        } catch (markError) {
+          logger.error(
+            `❌ Failed to mark OpenAI account unauthorized after ${unauthorizedStatus}:`,
+            markError
+          )
         }
-        return
+
+        excludedAccountIds.add(accountId)
+        unauthorizedRetryCount += 1
+
+        logger.warn(
+          `🔄 Retrying OpenAI request with another account after ${statusDescription.toLowerCase()} (${unauthorizedRetryCount} unauthorized account(s) excluded in this request)`
+        )
+        continue
       }
 
-      rateLimitRetryCount += 1
-      logger.warn(
-        `🔄 Retrying OpenAI request with another account after rate limit (${rateLimitRetryCount}/${MAX_OPENAI_RATE_LIMIT_RETRIES})`
-      )
-    }
+      if (upstream.status === 429) {
+        logger.warn(`🚫 Rate limit detected for OpenAI account ${accountId} (Codex API)`)
+        const { resetsInSeconds, errorData } =
+          parsedRateLimitResult || (await parseOpenAIRateLimitResponse(upstream, isStream))
 
-    if (upstream.status === 401 || upstream.status === 402) {
-      const unauthorizedStatus = upstream.status
-      const statusDescription = unauthorizedStatus === 401 ? 'Unauthorized' : 'Payment required'
-      logger.warn(
-        `🔐 ${statusDescription} error detected for OpenAI account ${accountId} (Codex API)`
-      )
-
-      let errorData = null
-
-      try {
-        if (isStream && upstream.data && typeof upstream.data.on === 'function') {
-          const chunks = []
-          await new Promise((resolve, reject) => {
-            upstream.data.on('data', (chunk) => chunks.push(chunk))
-            upstream.data.on('end', resolve)
-            upstream.data.on('error', reject)
-            setTimeout(resolve, 5000)
-          })
-
-          const fullResponse = Buffer.concat(chunks).toString()
-          try {
-            errorData = JSON.parse(fullResponse)
-          } catch (parseError) {
-            logger.error(`Failed to parse ${unauthorizedStatus} error response:`, parseError)
-            logger.debug(`Raw ${unauthorizedStatus} response:`, fullResponse)
-            errorData = { error: { message: fullResponse || 'Unauthorized' } }
-          }
-        } else {
-          errorData = upstream.data
-        }
-      } catch (parseError) {
-        logger.error(`⚠️ Failed to handle ${unauthorizedStatus} error response:`, parseError)
-      }
-
-      const statusLabel = unauthorizedStatus === 401 ? '401错误' : '402错误'
-      const extraHint = unauthorizedStatus === 402 ? '，可能欠费' : ''
-      let reason = `OpenAI账号认证失败（${statusLabel}${extraHint}）`
-      if (errorData) {
-        const messageCandidate =
-          errorData.error &&
-          typeof errorData.error.message === 'string' &&
-          errorData.error.message.trim()
-            ? errorData.error.message.trim()
-            : typeof errorData.message === 'string' && errorData.message.trim()
-              ? errorData.message.trim()
-              : null
-        if (messageCandidate) {
-          reason = `OpenAI账号认证失败（${statusLabel}${extraHint}）：${messageCandidate}`
-        }
-      }
-
-      try {
-        await unifiedOpenAIScheduler.markAccountUnauthorized(
+        await unifiedOpenAIScheduler.markAccountRateLimited(
           accountId,
           'openai',
           sessionHash,
-          reason
+          resetsInSeconds
         )
-      } catch (markError) {
-        logger.error(
-          `❌ Failed to mark OpenAI account unauthorized after ${unauthorizedStatus}:`,
-          markError
+
+        lastRateLimitResponse = { resetsInSeconds, errorData }
+        excludedAccountIds.add(accountId)
+
+        if (rateLimitRetryCount >= MAX_OPENAI_RATE_LIMIT_RETRIES) {
+          const errorResponse = buildOpenAIRateLimitErrorResponse(errorData, resetsInSeconds)
+          sendOpenAIErrorResponse(res, isStream, 429, errorResponse)
+          return
+        }
+
+        rateLimitRetryCount += 1
+        logger.warn(
+          `🔄 Retrying OpenAI request with another account after rate limit (${rateLimitRetryCount}/${MAX_OPENAI_RATE_LIMIT_RETRIES})`
         )
+        continue
       }
 
-      let errorResponse = errorData
-      if (!errorResponse || typeof errorResponse !== 'object' || Buffer.isBuffer(errorResponse)) {
-        const fallbackMessage =
-          typeof errorData === 'string' && errorData.trim() ? errorData.trim() : 'Unauthorized'
-        errorResponse = {
-          error: {
-            message: fallbackMessage,
-            type: 'unauthorized',
-            code: 'unauthorized'
+      if (upstream.status >= 500) {
+        const errorData =
+          parsedUpstreamErrorData || (await parseOpenAIErrorResponse(upstream, isStream, upstream.status))
+
+        if (
+          isUnstableUpstreamError(upstream.status, errorData) ||
+          isRetryableOpenAIInternalMessage(extractOpenAIErrorMessage(errorData))
+        ) {
+          const requestId =
+            upstream.headers?.['x-request-id'] || upstream.headers?.['request-id'] || null
+
+          await upstreamErrorHelper
+            .markTempUnavailable(accountId, 'openai', upstream.status, null, {
+              source: isCompactRoute ? 'openai_http_compact' : 'openai_http',
+              requestId,
+              message: extractOpenAIErrorMessage(errorData),
+              errorBody: errorData
+            })
+            .catch(() => {})
+
+          excludedAccountIds.add(accountId)
+          lastRetryableUpstreamResponse = {
+            status: 502,
+            payload: upstreamErrorHelper.buildFriendlyUpstreamError(
+              upstream.status,
+              extractOpenAIErrorMessage(errorData)
+            )
           }
+
+          if (openaiUpstreamSwitchRetryCount >= MAX_OPENAI_UPSTREAM_SWITCH_RETRIES) {
+            return sendOpenAIErrorResponse(
+              res,
+              isStream,
+              502,
+              lastRetryableUpstreamResponse.payload
+            )
+          }
+
+          openaiUpstreamSwitchRetryCount += 1
+          logger.warn(
+            `🔄 Retrying OpenAI request with another account after upstream ${upstream.status} (${openaiUpstreamSwitchRetryCount}/${MAX_OPENAI_UPSTREAM_SWITCH_RETRIES})`
+          )
+          continue
         }
       }
 
-      res.status(unauthorizedStatus).json(errorResponse)
-      return
-    } else if (upstream.status === 200 || upstream.status === 201) {
+      if (isStream && (upstream.status === 200 || upstream.status === 201)) {
+        streamProbeResult = await observeInitialOpenAIStream(upstream.data)
+
+        if (streamProbeResult.action === 'rate_limit') {
+          const resetsInSeconds = streamProbeResult.errorInfo?.resetsInSeconds || null
+          const errorData = streamProbeResult.errorInfo?.payload || null
+
+          await unifiedOpenAIScheduler.markAccountRateLimited(
+            accountId,
+            'openai',
+            sessionHash,
+            resetsInSeconds
+          )
+
+          lastRateLimitResponse = { resetsInSeconds, errorData }
+          excludedAccountIds.add(accountId)
+
+          if (rateLimitRetryCount >= MAX_OPENAI_RATE_LIMIT_RETRIES) {
+            const errorResponse = buildOpenAIRateLimitErrorResponse(errorData, resetsInSeconds)
+            sendOpenAIErrorResponse(res, true, 429, errorResponse)
+            return
+          }
+
+          rateLimitRetryCount += 1
+          logger.warn(
+            `🔄 Retrying OpenAI request with another account after early stream rate limit (${rateLimitRetryCount}/${MAX_OPENAI_RATE_LIMIT_RETRIES})`
+          )
+          continue
+        }
+
+        if (streamProbeResult.action === 'unauthorized') {
+          const unauthorizedStatus = streamProbeResult.errorInfo?.statusCode || 401
+          const reason = buildOpenAIUnauthorizedReason(
+            unauthorizedStatus,
+            streamProbeResult.errorInfo?.payload,
+            streamProbeResult.errorInfo?.message
+          )
+
+          try {
+            await unifiedOpenAIScheduler.markAccountUnauthorized(
+              accountId,
+              'openai',
+              sessionHash,
+              reason,
+              unauthorizedStatus
+            )
+          } catch (markError) {
+            logger.error(
+              `❌ Failed to mark OpenAI account unauthorized after early stream error:`,
+              markError
+            )
+          }
+
+          excludedAccountIds.add(accountId)
+          unauthorizedRetryCount += 1
+          logger.warn(
+            `🔄 Retrying OpenAI request with another account after early stream unauthorized (${unauthorizedRetryCount} unauthorized account(s) excluded in this request)`
+          )
+          continue
+        }
+
+        if (streamProbeResult.action === 'retryable_upstream_error') {
+          const requestId =
+            upstream.headers?.['x-request-id'] || upstream.headers?.['request-id'] || null
+
+          await upstreamErrorHelper
+            .markTempUnavailable(
+              accountId,
+              'openai',
+              streamProbeResult.errorInfo?.statusCode || 503,
+              null,
+              {
+                source: isCompactRoute ? 'openai_stream_probe_compact' : 'openai_stream_probe',
+                requestId,
+                message: streamProbeResult.errorInfo?.message || '',
+                errorBody: streamProbeResult.errorInfo?.payload || null
+              }
+            )
+            .catch(() => {})
+
+          excludedAccountIds.add(accountId)
+          lastRetryableUpstreamResponse = {
+            status: 502,
+            payload: upstreamErrorHelper.buildFriendlyUpstreamError(
+              streamProbeResult.errorInfo?.statusCode || 503,
+              streamProbeResult.errorInfo?.message || ''
+            )
+          }
+
+          if (openaiUpstreamSwitchRetryCount >= MAX_OPENAI_UPSTREAM_SWITCH_RETRIES) {
+            return sendOpenAIErrorResponse(
+              res,
+              true,
+              502,
+              lastRetryableUpstreamResponse.payload
+            )
+          }
+
+          openaiUpstreamSwitchRetryCount += 1
+          logger.warn(
+            `🔄 Retrying OpenAI request with another account after early stream upstream error (${openaiUpstreamSwitchRetryCount}/${MAX_OPENAI_UPSTREAM_SWITCH_RETRIES})`
+          )
+          continue
+        }
+      }
+
+      break
+    }
+
+    if (upstream.status === 200 || upstream.status === 201) {
       // 请求成功，检查并移除限流状态
       const isRateLimited = await unifiedOpenAIScheduler.isAccountRateLimited(accountId)
       if (isRateLimited) {
@@ -768,6 +1216,8 @@ const handleResponses = async (req, res) => {
           )
         }
 
+        await unifiedOpenAIScheduler.handleSuccessfulAccountUse(accountId, 'openai', sessionHash)
+
         // 返回响应
         res.json(responseData)
         return
@@ -782,6 +1232,7 @@ const handleResponses = async (req, res) => {
 
     // 使用增量 SSE 解析器
     const sseParser = new IncrementalSSEParser()
+    let streamFinalized = false
 
     // 处理解析出的事件
     const processSSEEvent = (eventData) => {
@@ -812,7 +1263,7 @@ const handleResponses = async (req, res) => {
       }
     }
 
-    upstream.data.on('data', (chunk) => {
+    const forwardStreamChunk = (chunk) => {
       try {
         // 转发数据给客户端
         if (!res.destroyed) {
@@ -829,9 +1280,14 @@ const handleResponses = async (req, res) => {
       } catch (error) {
         logger.error('Error processing OpenAI stream chunk:', error)
       }
-    })
+    }
 
-    upstream.data.on('end', async () => {
+    const finalizeStream = async () => {
+      if (streamFinalized) {
+        return
+      }
+      streamFinalized = true
+
       // 处理剩余的 buffer
       const remaining = sseParser.getRemaining()
       if (remaining.trim()) {
@@ -908,9 +1364,36 @@ const handleResponses = async (req, res) => {
           )
           await unifiedOpenAIScheduler.removeAccountRateLimit(accountId, 'openai')
         }
+
+        await unifiedOpenAIScheduler.handleSuccessfulAccountUse(accountId, 'openai', sessionHash)
       }
 
       res.end()
+    }
+
+    const bufferedChunks = streamProbeResult?.bufferedChunks || []
+    for (const chunk of bufferedChunks) {
+      forwardStreamChunk(chunk)
+    }
+
+    if (streamProbeResult?.streamEnded) {
+      await finalizeStream()
+      return
+    }
+
+    upstream.data.on('data', (chunk) => {
+      forwardStreamChunk(chunk)
+    })
+
+    upstream.data.on('end', () => {
+      finalizeStream().catch((error) => {
+        logger.error('Failed to finalize OpenAI stream:', error)
+        if (!res.headersSent) {
+          res.status(500).json({ error: { message: 'Failed to finalize stream' } })
+        } else {
+          res.end()
+        }
+      })
     })
 
     upstream.data.on('error', (err) => {
@@ -933,10 +1416,19 @@ const handleResponses = async (req, res) => {
     }
     req.on('close', cleanup)
     req.on('aborted', cleanup)
+    try {
+      upstream.data.resume?.()
+    } catch (_) {
+      //
+    }
   } catch (error) {
     logger.error('Proxy to ChatGPT codex/responses failed:', error)
+    const retryableNetworkError = upstreamErrorHelper.isRetryableNetworkError(error)
     // 优先使用主动设置的 statusCode，然后是上游响应的状态码，最后默认 500
-    const status = error.statusCode || error.response?.status || 500
+    const status =
+      error.statusCode ||
+      error.response?.status ||
+      (retryableNetworkError ? upstreamErrorHelper.getRetryableNetworkStatus(error) : 500)
 
     if ((status === 401 || status === 402) && accountId) {
       const statusLabel = status === 401 ? '401错误' : '402错误'
@@ -964,7 +1456,8 @@ const handleResponses = async (req, res) => {
           accountId,
           accountType || 'openai',
           sessionHash,
-          reason
+          reason,
+          status
         )
       } catch (markError) {
         logger.error('❌ Failed to mark OpenAI account unauthorized in catch handler:', markError)
@@ -972,7 +1465,9 @@ const handleResponses = async (req, res) => {
     }
 
     let responsePayload = error.response?.data
-    if (!responsePayload) {
+    if (retryableNetworkError) {
+      responsePayload = upstreamErrorHelper.buildFriendlyNetworkError(status)
+    } else if (!responsePayload) {
       responsePayload = { error: { message: getSafeMessage(error) } }
     } else if (typeof responsePayload === 'string') {
       responsePayload = { error: { message: getSafeMessage(responsePayload) } }
@@ -981,11 +1476,15 @@ const handleResponses = async (req, res) => {
         error: { message: getSafeMessage(responsePayload.message || error) }
       }
     } else if (responsePayload.error?.message) {
-      responsePayload.error.message = getSafeMessage(responsePayload.error.message)
+      responsePayload.error.message = getSafeMessage(responsePayload)
+    }
+
+    if (status === 429) {
+      responsePayload = buildOpenAIRateLimitErrorResponse(responsePayload, null)
     }
 
     if (!res.headersSent) {
-      res.status(status).json(responsePayload)
+      sendOpenAIErrorResponse(res, req.body?.stream !== false, status, responsePayload)
     }
   }
 }
@@ -1063,3 +1562,12 @@ router.get('/key-info', authenticateApiKey, async (req, res) => {
 module.exports = router
 module.exports.handleResponses = handleResponses
 module.exports.CODEX_CLI_INSTRUCTIONS = CODEX_CLI_INSTRUCTIONS
+module.exports.__testables = {
+  buildOpenAIStreamErrorPayload,
+  getOpenAIStreamErrorInfo,
+  extractOpenAIErrorMessage,
+  isRetryableOpenAIInternalMessage,
+  classifyOpenAIStreamProbeEvent,
+  isMeaningfulOpenAIStreamEvent,
+  observeInitialOpenAIStream
+}

@@ -494,15 +494,11 @@ class ApiKeyService {
 
       // 注意：这里不处理激活逻辑，保持 API Key 的未激活状态
 
-      // 检查是否过期（仅对已激活的 Key 检查）
-      if (
+      // 统计/自助查询允许过期 key 继续查看余额和续期信息，但保留过期标记。
+      const isExpired =
         keyData.isActivated === 'true' &&
         keyData.expiresAt &&
         new Date() > new Date(keyData.expiresAt)
-      ) {
-        const keyName = keyData.name || 'Unknown'
-        return { valid: false, error: `API Key "${keyName}" 已过期`, keyName }
-      }
 
       // 如果API Key属于某个用户，检查用户是否被禁用
       if (keyData.userId) {
@@ -562,6 +558,7 @@ class ApiKeyService {
           // 添加激活相关字段
           expirationMode: keyData.expirationMode || 'fixed',
           isActivated: keyData.isActivated === 'true',
+          isExpired,
           activationDays: parseInt(keyData.activationDays || 0),
           activationUnit: keyData.activationUnit || 'days',
           activatedAt: keyData.activatedAt || null,
@@ -585,6 +582,7 @@ class ApiKeyService {
           dailyCostLimit: parseFloat(keyData.dailyCostLimit || 0),
           totalCostLimit: parseFloat(keyData.totalCostLimit || 0),
           weeklyOpusCostLimit: parseFloat(keyData.weeklyOpusCostLimit || 0),
+          dailyResetCredits: parseInt(keyData.dailyResetCredits || 0),
           dailyCost: dailyCost || 0,
           totalCost: costStats?.total || 0,
           weeklyOpusCost:
@@ -1429,6 +1427,125 @@ class ApiKeyService {
       return { success: true, apiKey: updatedData }
     } catch (error) {
       logger.error('❌ Failed to restore API key:', error)
+      throw error
+    }
+  }
+
+  async resetDailyUsage(keyId) {
+    try {
+      const keyData = await redis.getApiKey(keyId)
+      if (!keyData || Object.keys(keyData).length === 0) {
+        throw new Error('API key not found')
+      }
+
+      const today = redis.getDateStringInTimezone()
+      const dailyUsageKey = `usage:daily:${keyId}:${today}`
+      const dailyCostKey = `usage:cost:daily:${keyId}:${today}`
+      const dailyIndexKey = `usage:daily:index:${today}`
+      const modelDailyKeys = await redis.scanKeys(`usage:${keyId}:model:daily:*:${today}`)
+
+      const pipeline = redis.client.pipeline()
+      pipeline.del(dailyUsageKey)
+      pipeline.del(dailyCostKey)
+      pipeline.srem(dailyIndexKey, keyId)
+      pipeline.del(`usage:daily:index:${today}:empty`)
+
+      for (const key of modelDailyKeys) {
+        pipeline.del(key)
+      }
+
+      await pipeline.exec()
+
+      logger.success(`Admin reset daily usage for API key ${keyId} on ${today}`)
+      return { success: true, date: today, deletedModelKeys: modelDailyKeys.length }
+    } catch (error) {
+      logger.error('❌ Failed to reset daily usage for API key:', error)
+      throw error
+    }
+  }
+
+  async addDailyResetCredits(keyId, count) {
+    try {
+      const keyData = await redis.getApiKey(keyId)
+      if (!keyData || Object.keys(keyData).length === 0) {
+        throw new Error('API key not found')
+      }
+
+      const amount = parseInt(count) || 0
+      if (amount <= 0) {
+        throw new Error('reset count must be a positive number')
+      }
+
+      const currentCredits = parseInt(keyData.dailyResetCredits || 0)
+      const newCredits = currentCredits + amount
+      await redis.client.hset(`apikey:${keyId}`, 'dailyResetCredits', String(newCredits))
+
+      logger.success(`🔄 Added ${amount} daily reset credits to key ${keyId}, new balance: ${newCredits}`)
+
+      return { success: true, previousCredits: currentCredits, addedCredits: amount, dailyResetCredits: newCredits }
+    } catch (error) {
+      logger.error('❌ Failed to add daily reset credits:', error)
+      throw error
+    }
+  }
+
+  async deductDailyResetCredits(keyId, count) {
+    try {
+      const keyData = await redis.getApiKey(keyId)
+      if (!keyData || Object.keys(keyData).length === 0) {
+        throw new Error('API key not found')
+      }
+
+      const amount = parseInt(count) || 0
+      if (amount <= 0) {
+        throw new Error('reset count must be a positive number')
+      }
+
+      const currentCredits = parseInt(keyData.dailyResetCredits || 0)
+      const actualDeducted = Math.min(amount, currentCredits)
+      const newCredits = Math.max(currentCredits - amount, 0)
+      await redis.client.hset(`apikey:${keyId}`, 'dailyResetCredits', String(newCredits))
+
+      logger.success(`🔄 Deducted ${actualDeducted} daily reset credits from key ${keyId}, new balance: ${newCredits}`)
+
+      return { success: true, previousCredits: currentCredits, actualDeducted, dailyResetCredits: newCredits }
+    } catch (error) {
+      logger.error('❌ Failed to deduct daily reset credits:', error)
+      throw error
+    }
+  }
+
+  async consumeDailyResetCreditAndResetDailyUsage(keyId) {
+    try {
+      const keyData = await redis.getApiKey(keyId)
+      if (!keyData || Object.keys(keyData).length === 0) {
+        throw new Error('API key not found')
+      }
+
+      const dailyCostLimit = parseFloat(keyData.dailyCostLimit || 0)
+      if (dailyCostLimit <= 0) {
+        throw new Error('该 API Key 没有每日额度限制')
+      }
+
+      const currentCredits = parseInt(keyData.dailyResetCredits || 0)
+      if (currentCredits <= 0) {
+        throw new Error('可用重置次数不足')
+      }
+
+      const resetResult = await this.resetDailyUsage(keyId)
+      const newCredits = currentCredits - 1
+      await redis.client.hset(`apikey:${keyId}`, 'dailyResetCredits', String(newCredits))
+
+      logger.success(`🔄 Consumed 1 daily reset credit for key ${keyId}, remaining: ${newCredits}`)
+
+      return {
+        success: true,
+        remainingDailyResetCredits: newCredits,
+        consumedCredits: 1,
+        ...resetResult
+      }
+    } catch (error) {
+      logger.error('❌ Failed to consume daily reset credit:', error)
       throw error
     }
   }

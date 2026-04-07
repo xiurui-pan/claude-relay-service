@@ -27,6 +27,108 @@ class UnifiedOpenAIScheduler {
     return excludedAccountIds.has(String(accountId))
   }
 
+  _getSelectionState(options = {}) {
+    if (!options || typeof options !== 'object') {
+      return null
+    }
+    return options.selectionState && typeof options.selectionState === 'object'
+      ? options.selectionState
+      : null
+  }
+
+  _cacheSharedCandidates(selectionState, candidates = []) {
+    if (!selectionState) {
+      return
+    }
+    selectionState.sharedCandidateAccounts = candidates.map((candidate) => ({
+      accountId: candidate.accountId,
+      accountType: candidate.accountType,
+      name: candidate.name,
+      priority: candidate.priority,
+      lastUsedAt: candidate.lastUsedAt || '0',
+      createdAt: candidate.createdAt || '0'
+    }))
+  }
+
+  _isRateLimitStillActiveFromAccount(account) {
+    if (!this._hasRateLimitFlag(account?.rateLimitStatus)) {
+      return false
+    }
+
+    const rateLimitStatus =
+      account && typeof account.rateLimitStatus === 'object' ? account.rateLimitStatus : null
+    const rateLimitResetAt = rateLimitStatus?.rateLimitResetAt || account?.rateLimitResetAt || null
+    const rateLimitedAt = rateLimitStatus?.rateLimitedAt || account?.rateLimitedAt || null
+    const minutesRemaining = Number(rateLimitStatus?.minutesRemaining)
+
+    if (rateLimitResetAt) {
+      const resetAt = new Date(rateLimitResetAt).getTime()
+      if (!Number.isNaN(resetAt)) {
+        return Date.now() < resetAt
+      }
+    }
+
+    if (Number.isFinite(minutesRemaining) && minutesRemaining > 0) {
+      return true
+    }
+
+    if (rateLimitedAt) {
+      const limitedAt = new Date(rateLimitedAt).getTime()
+      if (!Number.isNaN(limitedAt)) {
+        const limitDuration = 60 * 60 * 1000
+        return Date.now() < limitedAt + limitDuration
+      }
+    }
+
+    return rateLimitStatus?.isRateLimited === true
+  }
+
+  async _selectFromCachedSharedCandidates(
+    selectionState,
+    excludedAccountIds,
+    sessionHash,
+    apiKeyName
+  ) {
+    const cachedCandidates = Array.isArray(selectionState?.sharedCandidateAccounts)
+      ? selectionState.sharedCandidateAccounts
+      : []
+
+    if (cachedCandidates.length === 0) {
+      return null
+    }
+
+    for (const candidate of cachedCandidates) {
+      if (this._isExcludedAccount(candidate.accountId, excludedAccountIds)) {
+        continue
+      }
+
+      const isAvailable = await this._isAccountAvailable(candidate.accountId, candidate.accountType)
+      if (!isAvailable) {
+        continue
+      }
+
+      if (sessionHash) {
+        await this._setSessionMapping(sessionHash, candidate.accountId, candidate.accountType)
+        logger.info(
+          `🎯 Created sticky session mapping from cached candidates: ${candidate.name} (${candidate.accountId}, ${candidate.accountType}) for session ${sessionHash}`
+        )
+      }
+
+      logger.info(
+        `🎯 Selected cached account: ${candidate.name} (${candidate.accountId}, ${candidate.accountType}, priority: ${candidate.priority || 50}) for API key ${apiKeyName}`
+      )
+
+      await this.updateAccountLastUsed(candidate.accountId, candidate.accountType)
+
+      return {
+        accountId: candidate.accountId,
+        accountType: candidate.accountType
+      }
+    }
+
+    return null
+  }
+
   // 🔧 辅助方法：检查账户是否被限流（兼容字符串和对象格式）
   _isRateLimited(rateLimitStatus) {
     if (!rateLimitStatus) {
@@ -70,8 +172,9 @@ class UnifiedOpenAIScheduler {
   // ✅ 确保账号在调度前完成限流恢复与 schedulable 校正
   async _ensureAccountReadyForScheduling(account, accountId, { sanitized = true } = {}) {
     const hasRateLimitFlag = this._hasRateLimitFlag(account.rateLimitStatus)
-    let rateLimitChecked = false
-    let stillLimited = false
+    const stillLimited = hasRateLimitFlag
+      ? this._isRateLimitStillActiveFromAccount(account)
+      : false
 
     const accountSchedulable = isSchedulable(account.schedulable)
 
@@ -80,8 +183,6 @@ class UnifiedOpenAIScheduler {
         return { canUse: false, reason: 'not_schedulable' }
       }
 
-      stillLimited = await this.isAccountRateLimited(accountId)
-      rateLimitChecked = true
       if (stillLimited) {
         return { canUse: false, reason: 'rate_limited' }
       }
@@ -96,10 +197,6 @@ class UnifiedOpenAIScheduler {
     }
 
     if (hasRateLimitFlag) {
-      if (!rateLimitChecked) {
-        stillLimited = await this.isAccountRateLimited(accountId)
-        rateLimitChecked = true
-      }
       if (stillLimited) {
         return { canUse: false, reason: 'rate_limited' }
       }
@@ -124,13 +221,6 @@ class UnifiedOpenAIScheduler {
       }
     }
 
-    if (!rateLimitChecked) {
-      stillLimited = await this.isAccountRateLimited(accountId)
-      if (stillLimited) {
-        return { canUse: false, reason: 'rate_limited' }
-      }
-    }
-
     return { canUse: true }
   }
 
@@ -138,6 +228,7 @@ class UnifiedOpenAIScheduler {
   async selectAccountForApiKey(apiKeyData, sessionHash = null, requestedModel = null, options = {}) {
     try {
       const excludedAccountIds = this._normalizeExcludedAccountIds(options)
+      const selectionState = this._getSelectionState(options)
 
       // 如果API Key绑定了专属账户或分组，优先使用
       if (apiKeyData.openaiAccountId) {
@@ -334,6 +425,19 @@ class UnifiedOpenAIScheduler {
         }
       }
 
+      if (selectionState?.sharedCandidateAccounts?.length > 0) {
+        const cachedSelection = await this._selectFromCachedSharedCandidates(
+          selectionState,
+          excludedAccountIds,
+          sessionHash,
+          apiKeyData.name
+        )
+        if (cachedSelection) {
+          return cachedSelection
+        }
+        selectionState.sharedCandidateAccounts = []
+      }
+
       // 获取所有可用账户
       const availableAccounts = await this._getAllAvailableAccounts(apiKeyData, requestedModel, {
         excludedAccountIds: Array.from(excludedAccountIds)
@@ -342,10 +446,13 @@ class UnifiedOpenAIScheduler {
       if (availableAccounts.length === 0) {
         // 提供更详细的错误信息
         if (requestedModel) {
+          const excludedCount = excludedAccountIds.size
           const error = new Error(
-            `No available OpenAI accounts support the requested model: ${requestedModel}`
+            excludedCount > 0
+              ? `No available OpenAI accounts are currently usable for model: ${requestedModel}`
+              : `No available OpenAI accounts support the requested model: ${requestedModel}`
           )
-          error.statusCode = 400 // Bad Request - 模型不支持
+          error.statusCode = excludedCount > 0 ? 503 : 400
           throw error
         } else {
           const error = new Error('No available OpenAI accounts')
@@ -356,6 +463,7 @@ class UnifiedOpenAIScheduler {
 
       // 按优先级和最后使用时间排序（与 Claude/Gemini 调度保持一致）
       const sortedAccounts = sortAccountsByPriority(availableAccounts)
+      this._cacheSharedCandidates(selectionState, sortedAccounts)
 
       // 选择第一个账户
       const selectedAccount = sortedAccounts[0]
@@ -428,6 +536,11 @@ class UnifiedOpenAIScheduler {
         const isTempUnavailable = await upstreamErrorHelper.isTempUnavailable(accountId, 'openai')
         if (isTempUnavailable) {
           logger.debug(`⏭️ Skipping openai account ${account.name} - temporarily unavailable`)
+          continue
+        }
+
+        if (openaiAccountService.shouldRotateDisposableFreeAccount(account)) {
+          logger.debug(`⏭️ Skipping disposable free account ${account.name} - rotation threshold reached`)
           continue
         }
 
@@ -605,6 +718,11 @@ class UnifiedOpenAIScheduler {
           return false
         }
 
+        if (openaiAccountService.shouldRotateDisposableFreeAccount(account)) {
+          logger.info(`♻️ OpenAI account ${accountId} reached disposable free rotation threshold`)
+          return false
+        }
+
         return true
       } else if (accountType === 'openai-responses') {
         const account = await openaiResponsesAccountService.getAccount(accountId)
@@ -734,15 +852,20 @@ class UnifiedOpenAIScheduler {
       } else if (accountType === 'openai-responses') {
         // 对于 OpenAI-Responses 账户，使用与普通 OpenAI 账户类似的处理方式
         const duration = resetsInSeconds ? Math.ceil(resetsInSeconds / 60) : null
-        await openaiResponsesAccountService.markAccountRateLimited(accountId, duration)
+        const marked = await openaiResponsesAccountService.markAccountRateLimited(
+          accountId,
+          duration
+        )
 
-        // 同时更新调度状态，避免继续被调度
-        await openaiResponsesAccountService.updateAccount(accountId, {
-          schedulable: 'false',
-          rateLimitResetAt: resetsInSeconds
-            ? new Date(Date.now() + resetsInSeconds * 1000).toISOString()
-            : new Date(Date.now() + 3600000).toISOString() // 默认1小时
-        })
+        if (marked) {
+          // 同时更新调度状态，避免继续被调度
+          await openaiResponsesAccountService.updateAccount(accountId, {
+            schedulable: 'false',
+            rateLimitResetAt: resetsInSeconds
+              ? new Date(Date.now() + resetsInSeconds * 1000).toISOString()
+              : new Date(Date.now() + 3600000).toISOString() // 默认1小时
+          })
+        }
       }
 
       // 删除会话映射
@@ -765,13 +888,14 @@ class UnifiedOpenAIScheduler {
     accountId,
     accountType,
     sessionHash = null,
-    reason = 'OpenAI账号认证失败（401错误）'
+    reason = 'OpenAI账号认证失败（401/402错误）',
+    statusCode = 401
   ) {
     try {
       if (accountType === 'openai') {
-        await openaiAccountService.markAccountUnauthorized(accountId, reason)
+        await openaiAccountService.markAccountUnauthorized(accountId, reason, statusCode)
       } else if (accountType === 'openai-responses') {
-        await openaiResponsesAccountService.markAccountUnauthorized(accountId, reason)
+        await openaiResponsesAccountService.markAccountUnauthorized(accountId, reason, statusCode)
       } else {
         logger.warn(
           `⚠️ Unsupported account type ${accountType} when marking unauthorized for account ${accountId}`
@@ -790,6 +914,23 @@ class UnifiedOpenAIScheduler {
         error
       )
       throw error
+    }
+  }
+
+  async handleSuccessfulAccountUse(accountId, accountType, sessionHash = null) {
+    try {
+      if (accountType !== 'openai') {
+        return { tracked: false, retired: false, successCount: 0 }
+      }
+
+      const result = await openaiAccountService.retireDisposableFreeAccountAfterSuccess(accountId)
+      if (result?.retired && sessionHash) {
+        await this._deleteSessionMapping(sessionHash)
+      }
+      return result
+    } catch (error) {
+      logger.error(`❌ Failed to handle successful OpenAI account use for ${accountId}:`, error)
+      return { tracked: false, retired: false, successCount: 0 }
     }
   }
 

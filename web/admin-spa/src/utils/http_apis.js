@@ -5,6 +5,8 @@ export const getModelsApi = () => request({ url: '/apiStats/models', method: 'GE
 
 // 模型价格管理
 export const getModelPricingApi = () => request({ url: '/admin/models/pricing', method: 'GET' })
+export const updateModelPricingApi = (data) =>
+  request({ url: '/admin/models/pricing', method: 'PUT', data })
 export const getModelPricingStatusApi = () =>
   request({ url: '/admin/models/pricing/status', method: 'GET' })
 export const refreshModelPricingApi = () =>
@@ -32,6 +34,10 @@ export const changePasswordApi = (data) =>
 export const getOemSettingsApi = () => request({ url: '/admin/oem-settings', method: 'GET' })
 export const updateOemSettingsApi = (data) =>
   request({ url: '/admin/oem-settings', method: 'PUT', data })
+export const getLocalModelStatusApi = () =>
+  request({ url: '/admin/local-model/status', method: 'GET' })
+export const setLocalModelEnabledApi = (enabled) =>
+  request({ url: '/admin/local-model/enabled', method: 'PUT', data: { enabled } })
 
 // 服务倍率配置（公开接口）
 export const getServiceRatesApi = () => request({ url: '/apiStats/service-rates', method: 'GET' })
@@ -39,6 +45,8 @@ export const getServiceRatesApi = () => request({ url: '/apiStats/service-rates'
 // 额度卡兑换（公开接口）
 export const redeemCardByApiIdApi = (data) =>
   request({ url: '/apiStats/api/redeem-card', method: 'POST', data })
+export const resetDailyUsageByApiIdApi = (apiId) =>
+  request({ url: '/apiStats/api/reset-daily-usage', method: 'POST', data: { apiId } })
 export const getRedemptionHistoryByApiIdApi = (apiId, params = {}) =>
   request({ url: '/apiStats/api/redemption-history', method: 'GET', params: { apiId, ...params } })
 
@@ -106,6 +114,8 @@ export const batchUpdateApiKeysApi = (data) =>
   request({ url: '/admin/api-keys/batch', method: 'PUT', data })
 export const getApiKeyUsageRecordsApi = (id, params) =>
   request({ url: `/admin/api-keys/${id}/usage-records`, method: 'GET', params })
+export const resetApiKeyDailyUsageApi = (id) =>
+  request({ url: `/admin/api-keys/${id}/reset-daily-usage`, method: 'POST' })
 
 // Claude 账户
 export const getClaudeAccountsApi = () => request({ url: '/admin/claude-accounts', method: 'GET' })

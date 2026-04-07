@@ -2570,6 +2570,34 @@ router.delete('/api-keys/:keyId', authenticateAdmin, async (req, res) => {
   }
 })
 
+router.post('/api-keys/:keyId/reset-daily-usage', authenticateAdmin, async (req, res) => {
+  try {
+    const { keyId } = req.params
+    const result = await apiKeyService.resetDailyUsage(keyId)
+
+    return res.json({
+      success: true,
+      message: '当日额度已重置',
+      data: result
+    })
+  } catch (error) {
+    logger.error('❌ Failed to reset API key daily usage:', error)
+
+    if (error.message === 'API key not found') {
+      return res.status(404).json({
+        success: false,
+        error: 'API Key 不存在'
+      })
+    }
+
+    return res.status(500).json({
+      success: false,
+      error: '重置当日额度失败',
+      message: error.message
+    })
+  }
+})
+
 // 📋 获取已删除的API Keys
 router.get('/api-keys/deleted', authenticateAdmin, async (req, res) => {
   try {

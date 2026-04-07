@@ -197,7 +197,9 @@
     </div>
 
     <!-- 账户余额/配额汇总 -->
-    <div class="mb-4 grid grid-cols-1 gap-3 sm:mb-6 sm:grid-cols-2 sm:gap-4 md:mb-8 md:gap-6">
+    <div
+      class="mb-4 grid grid-cols-1 gap-3 sm:mb-6 sm:grid-cols-2 sm:gap-4 md:mb-8 md:gap-6 xl:grid-cols-3"
+    >
       <div class="stat-card">
         <div class="flex items-center justify-between">
           <div>
@@ -205,10 +207,10 @@
               账户余额/配额
             </p>
             <p class="text-2xl font-bold text-gray-900 dark:text-gray-100 sm:text-3xl">
-              {{ formatCurrencyUsd(balanceSummary.totalBalance || 0) }}
+              {{ formatCurrencyUsd(dashboardBalanceOverview.totalBalance) }}
             </p>
             <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
-              低余额: {{ balanceSummary.lowBalanceCount || 0 }} | 总成本:
+              低余额: {{ dashboardBalanceOverview.lowBalanceCount }} | 总成本:
               {{ formatCurrencyUsd(balanceSummary.totalCost || 0) }}
             </p>
           </div>
@@ -229,6 +231,62 @@
             <i :class="['fas', loadingBalanceSummary ? 'fa-spinner fa-spin' : 'fa-sync-alt']" />
             刷新
           </button>
+        </div>
+      </div>
+
+      <div class="stat-card">
+        <div class="flex items-center justify-between">
+          <div>
+            <p class="mb-1 text-xs font-semibold text-gray-600 dark:text-gray-400 sm:text-sm">
+              OpenAI OAuth 限额
+            </p>
+            <p class="text-2xl font-bold text-gray-900 dark:text-gray-100 sm:text-3xl">
+              周剩余 {{ openaiOauthLimitStats.secondary.remainingText }}
+            </p>
+            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+              5h 已用: {{ openaiOauthLimitStats.primary.usedText }} | 账号:
+              {{ openaiOauthLimitStats.primary.accountCount }}
+            </p>
+            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+              周限剩余: {{ openaiOauthLimitStats.secondary.remainingText }} | 已用:
+              {{ openaiOauthLimitStats.secondary.usedText }}
+            </p>
+          </div>
+          <div class="stat-icon flex-shrink-0 bg-gradient-to-br from-sky-500 to-cyan-600">
+            <i class="fas fa-openai" />
+          </div>
+        </div>
+
+        <div class="mt-3 space-y-3">
+          <div
+            class="mb-1 flex items-center justify-between text-xs text-gray-600 dark:text-gray-400"
+          >
+            <span>5h 合计剩余占比</span>
+            <span class="font-medium text-sky-600 dark:text-sky-400">
+              {{ openaiOauthLimitStats.primary.remainingPercentText }}
+            </span>
+          </div>
+          <div class="h-2 w-full rounded-full bg-gray-200 dark:bg-gray-700">
+            <div
+              class="h-2 rounded-full bg-gradient-to-r from-sky-500 to-cyan-500"
+              :style="{ width: openaiOauthLimitStats.primary.remainingPercentBar }"
+            ></div>
+          </div>
+
+          <div
+            class="mb-1 flex items-center justify-between text-xs text-gray-600 dark:text-gray-400"
+          >
+            <span>周限合计剩余占比</span>
+            <span class="font-medium text-cyan-600 dark:text-cyan-400">
+              {{ openaiOauthLimitStats.secondary.remainingPercentText }}
+            </span>
+          </div>
+          <div class="h-2 w-full rounded-full bg-gray-200 dark:bg-gray-700">
+            <div
+              class="h-2 rounded-full bg-gradient-to-r from-cyan-500 to-teal-500"
+              :style="{ width: openaiOauthLimitStats.secondary.remainingPercentBar }"
+            ></div>
+          </div>
         </div>
       </div>
 
@@ -270,6 +328,7 @@
             </div>
             <div class="mt-1 text-xs text-gray-600 dark:text-gray-400">
               <span v-if="account.balance">余额: {{ account.balance.formattedAmount }}</span>
+              <span v-else-if="account.oauthQuotaSummary">{{ account.oauthQuotaSummary }}</span>
               <span v-else
                 >今日成本: {{ formatCurrencyUsd(account.statistics?.dailyCost || 0) }}</span
               >
@@ -288,6 +347,40 @@
                   class="h-2 rounded-full bg-red-500"
                   :style="{ width: `${Math.min(100, account.quota.percentage)}%` }"
                 ></div>
+              </div>
+            </div>
+            <div v-else-if="account.oauthPrimary || account.oauthSecondary" class="mt-2 space-y-2">
+              <div v-if="account.oauthPrimary">
+                <div
+                  class="mb-1 flex items-center justify-between text-xs text-gray-600 dark:text-gray-400"
+                >
+                  <span>5h 使用</span>
+                  <span class="text-red-600 dark:text-red-400">
+                    {{ account.oauthPrimary.usedPercent }}%
+                  </span>
+                </div>
+                <div class="h-2 w-full rounded-full bg-gray-200 dark:bg-gray-700">
+                  <div
+                    class="h-2 rounded-full bg-red-500"
+                    :style="{ width: `${Math.min(100, account.oauthPrimary.usedPercent)}%` }"
+                  ></div>
+                </div>
+              </div>
+              <div v-if="account.oauthSecondary">
+                <div
+                  class="mb-1 flex items-center justify-between text-xs text-gray-600 dark:text-gray-400"
+                >
+                  <span>周限使用</span>
+                  <span class="text-red-600 dark:text-red-400">
+                    {{ account.oauthSecondary.usedPercent }}%
+                  </span>
+                </div>
+                <div class="h-2 w-full rounded-full bg-gray-200 dark:bg-gray-700">
+                  <div
+                    class="h-2 rounded-full bg-red-500"
+                    :style="{ width: `${Math.min(100, account.oauthSecondary.usedPercent)}%` }"
+                  ></div>
+                </div>
               </div>
             </div>
           </div>
@@ -784,7 +877,7 @@ import { useDashboardStore } from '@/stores/dashboard'
 import { useThemeStore } from '@/stores/theme'
 import { formatNumber, showToast } from '@/utils/tools'
 
-import { getBalanceSummaryApi } from '@/utils/http_apis'
+import { getBalanceSummaryApi, getOpenAIAccountsApi } from '@/utils/http_apis'
 
 const dashboardStore = useDashboardStore()
 const themeStore = useThemeStore()
@@ -846,6 +939,7 @@ const balanceSummary = ref({
 })
 const loadingBalanceSummary = ref(false)
 const balanceSummaryUpdatedAt = ref(null)
+const openaiOauthAccounts = ref([])
 
 const getBalancePlatformLabel = (platform) => {
   const map = {
@@ -863,6 +957,98 @@ const getBalancePlatformLabel = (platform) => {
   return map[platform] || platform
 }
 
+const getEffectiveRemainingAmount = (accountData) => {
+  const directBalance = Number(accountData?.balance?.amount)
+  if (Number.isFinite(directBalance)) {
+    return directBalance
+  }
+
+  const quotaRemaining = Number(accountData?.quota?.remaining)
+  if (Number.isFinite(quotaRemaining)) {
+    return quotaRemaining
+  }
+
+  return null
+}
+
+const getOpenAIOauthRiskSummary = (account) => {
+  const primaryUsed = Number(account?.codexUsage?.primary?.usedPercent)
+  const secondaryUsed = Number(account?.codexUsage?.secondary?.usedPercent)
+  const hasPrimary = Number.isFinite(primaryUsed)
+  const hasSecondary = Number.isFinite(secondaryUsed)
+  const normalizedPrimary = hasPrimary ? Math.max(0, Math.min(100, primaryUsed)) : null
+  const normalizedSecondary = hasSecondary ? Math.max(0, Math.min(100, secondaryUsed)) : null
+  const isPrimaryHigh = normalizedPrimary !== null && normalizedPrimary > 90
+  const isSecondaryHigh = normalizedSecondary !== null && normalizedSecondary > 90
+
+  if (!isPrimaryHigh && !isSecondaryHigh) {
+    return null
+  }
+
+  const summaryParts = []
+  if (normalizedPrimary !== null) {
+    summaryParts.push(`5h 剩余 ${Math.max(0, 100 - normalizedPrimary).toFixed(0)}%`)
+  }
+  if (normalizedSecondary !== null) {
+    summaryParts.push(`周限剩余 ${Math.max(0, 100 - normalizedSecondary).toFixed(0)}%`)
+  }
+
+  return {
+    oauthQuotaSummary: summaryParts.join(' | '),
+    oauthPrimary:
+      normalizedPrimary !== null
+        ? {
+            usedPercent: normalizedPrimary
+          }
+        : null,
+    oauthSecondary:
+      normalizedSecondary !== null
+        ? {
+            usedPercent: normalizedSecondary
+          }
+        : null
+  }
+}
+
+const dashboardBalanceOverview = computed(() => {
+  const platforms = balanceSummary.value?.platforms || {}
+  let totalBalance = 0
+  let lowBalanceCount = 0
+
+  Object.values(platforms).forEach((data) => {
+    const list = Array.isArray(data?.accounts) ? data.accounts : []
+    list.forEach((entry) => {
+      const accountData = entry?.data
+      if (!accountData) return
+
+      const effectiveRemaining = getEffectiveRemainingAmount(accountData)
+      const percentage = Number(accountData?.quota?.percentage)
+
+      if (Number.isFinite(effectiveRemaining)) {
+        totalBalance += effectiveRemaining
+      }
+
+      const isLowBalance = Number.isFinite(effectiveRemaining) && effectiveRemaining < 10
+      const isHighUsage = Number.isFinite(percentage) && percentage > 90
+
+      if (isLowBalance || isHighUsage) {
+        lowBalanceCount += 1
+      }
+    })
+  })
+
+  openaiOauthAccounts.value.forEach((account) => {
+    if (getOpenAIOauthRiskSummary(account)) {
+      lowBalanceCount += 1
+    }
+  })
+
+  return {
+    totalBalance,
+    lowBalanceCount
+  }
+})
+
 const lowBalanceAccounts = computed(() => {
   const result = []
   const platforms = balanceSummary.value?.platforms || {}
@@ -873,11 +1059,11 @@ const lowBalanceAccounts = computed(() => {
       const accountData = entry?.data
       if (!accountData) return
 
-      const amount = accountData.balance?.amount
-      const percentage = accountData.quota?.percentage
+      const effectiveRemaining = getEffectiveRemainingAmount(accountData)
+      const percentage = Number(accountData?.quota?.percentage)
 
-      const isLowBalance = typeof amount === 'number' && amount < 10
-      const isHighUsage = typeof percentage === 'number' && percentage > 90
+      const isLowBalance = Number.isFinite(effectiveRemaining) && effectiveRemaining < 10
+      const isHighUsage = Number.isFinite(percentage) && percentage > 90
 
       if (isLowBalance || isHighUsage) {
         result.push({
@@ -889,7 +1075,82 @@ const lowBalanceAccounts = computed(() => {
     })
   })
 
+  openaiOauthAccounts.value.forEach((account) => {
+    const riskSummary = getOpenAIOauthRiskSummary(account)
+    if (!riskSummary) {
+      return
+    }
+
+    result.push({
+      accountId: account.id,
+      name: account.name || account.id,
+      platform: 'openai',
+      statistics: account.usage?.daily
+        ? {
+            dailyCost: Number(account.usage.daily.cost || 0)
+          }
+        : {},
+      ...riskSummary
+    })
+  })
+
   return result
+})
+
+const buildCodexWindowSummary = (accounts, type) => {
+  let used = 0
+  let total = 0
+  let accountCount = 0
+
+  accounts.forEach((account) => {
+    if (!account || account.isActive === false || account.isActive === 'false') {
+      return
+    }
+
+    if (account.status && String(account.status).toLowerCase() !== 'active') {
+      return
+    }
+
+    const windowData = account?.codexUsage?.[type]
+    const usedPercent = Number(windowData?.usedPercent)
+    const hasPrimaryWindow = Number.isFinite(Number(account?.codexUsage?.primary?.usedPercent))
+    const weight = type === 'secondary' && !hasPrimaryWindow ? 0.1 : 1
+    const isSchedulable = account.schedulable === true || account.schedulable === 'true'
+
+    total += 100 * weight
+    accountCount += 1
+
+    if (Number.isFinite(usedPercent)) {
+      used += Math.max(0, Math.min(100, usedPercent)) * weight
+      return
+    }
+
+    if (!isSchedulable) {
+      used += 100 * weight
+    }
+  })
+
+  const remaining = Math.max(0, total - used)
+  const remainingPercent = total > 0 ? (remaining / total) * 100 : 0
+
+  return {
+    used,
+    remaining,
+    total,
+    accountCount,
+    usedText: `${used.toFixed(0)}%`,
+    remainingText: `${remaining.toFixed(0)}%`,
+    remainingPercentText: `${remainingPercent.toFixed(1)}%`,
+    remainingPercentBar: `${Math.max(0, Math.min(100, remainingPercent))}%`
+  }
+}
+
+const openaiOauthLimitStats = computed(() => {
+  const accounts = Array.isArray(openaiOauthAccounts.value) ? openaiOauthAccounts.value : []
+  return {
+    primary: buildCodexWindowSummary(accounts, 'primary'),
+    secondary: buildCodexWindowSummary(accounts, 'secondary')
+  }
 })
 
 const formatCurrencyUsd = (amount) => {
@@ -923,6 +1184,13 @@ const loadBalanceSummary = async () => {
     showToast('加载余额汇总失败', 'error')
   }
   loadingBalanceSummary.value = false
+}
+
+const loadOpenAIOauthAccounts = async () => {
+  const response = await getOpenAIAccountsApi()
+  if (response?.success) {
+    openaiOauthAccounts.value = Array.isArray(response.data) ? response.data : []
+  }
 }
 
 // 自动刷新相关
@@ -1671,7 +1939,12 @@ async function refreshAllData() {
 
   isRefreshing.value = true
   try {
-    await Promise.all([loadDashboardData(), refreshChartsData(), loadBalanceSummary()])
+    await Promise.all([
+      loadDashboardData(),
+      refreshChartsData(),
+      loadBalanceSummary(),
+      loadOpenAIOauthAccounts()
+    ])
   } finally {
     isRefreshing.value = false
   }

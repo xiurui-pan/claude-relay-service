@@ -326,6 +326,7 @@ class WebhookConfigService {
       platforms: [],
       notificationTypes: {
         accountAnomaly: true, // 账号异常
+        accountRateLimited: true, // 账号异常-限流
         quotaWarning: true, // 配额警告
         systemError: true, // 系统错误
         securityAlert: true, // 安全警报

@@ -52,11 +52,9 @@ class PricingService {
         logger.info('📁 Created data directory')
       }
 
-      // 检查是否需要下载或更新价格数据
-      await this.checkAndUpdatePricing()
-
-      // 初次启动时执行一次哈希校验，确保与远端保持一致
-      await this.syncWithRemoteHash()
+      // 启动阶段优先加载本地价格数据，避免远端波动拖慢整个服务启动。
+      await this.ensureStartupPricingData()
+      this.scheduleStartupRefresh()
 
       // 设置定时更新
       if (this.updateTimer) {
@@ -78,21 +76,50 @@ class PricingService {
     }
   }
 
+  async ensureStartupPricingData() {
+    if (fs.existsSync(this.pricingFile)) {
+      await this.loadPricingData()
+      return
+    }
+
+    logger.info('📋 Pricing file not found, loading bundled pricing data for startup')
+    await this.useFallbackPricing()
+  }
+
+  scheduleStartupRefresh() {
+    if (!this.needsUpdate()) {
+      return
+    }
+
+    setTimeout(() => {
+      this.checkAndUpdatePricing({ preserveExistingOnFailure: true }).catch((error) => {
+        logger.warn(`⚠️  启动后后台价格刷新失败：${error.message}`)
+      })
+    }, 0)
+  }
+
   // 检查并更新价格数据
-  async checkAndUpdatePricing() {
+  async checkAndUpdatePricing(options = {}) {
+    const { preserveExistingOnFailure = false } = options
+
     try {
       const needsUpdate = this.needsUpdate()
 
       if (needsUpdate) {
         logger.info('🔄 Updating model pricing data...')
-        await this.downloadPricingData()
+        await this.downloadPricingData({ preserveExistingOnFailure })
       } else {
         // 如果不需要更新，加载现有数据
         await this.loadPricingData()
       }
     } catch (error) {
       logger.error('❌ Failed to check/update pricing:', error)
-      // 如果更新失败，尝试使用fallback
+
+      if (preserveExistingOnFailure && this.pricingData) {
+        logger.warn('💰 保留当前已加载的本地价格数据，跳过覆盖')
+        return
+      }
+
       await this.useFallbackPricing()
     }
   }
@@ -118,11 +145,19 @@ class PricingService {
   }
 
   // 下载价格数据
-  async downloadPricingData() {
+  async downloadPricingData(options = {}) {
+    const { preserveExistingOnFailure = false } = options
+
     try {
       await this._downloadFromRemote()
     } catch (downloadError) {
       logger.warn(`⚠️  Failed to download pricing data: ${downloadError.message}`)
+
+      if (preserveExistingOnFailure && this.pricingData) {
+        logger.warn('💰 远端价格下载失败，继续使用当前已加载的本地价格数据')
+        return
+      }
+
       logger.info('📋 Using local fallback pricing data...')
       await this.useFallbackPricing()
     }

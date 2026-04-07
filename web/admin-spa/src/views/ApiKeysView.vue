@@ -261,6 +261,14 @@
 
               <!-- 创建按钮 -->
               <button
+                class="flex w-full items-center justify-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-5 py-2 text-sm font-medium text-emerald-700 shadow-sm transition-all duration-200 hover:border-emerald-300 hover:bg-emerald-100 hover:shadow-md dark:border-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300 dark:hover:bg-emerald-900/50 sm:w-auto"
+                :disabled="fishQuickCreateLoading"
+                @click.stop="openFishQuickCreateModal"
+              >
+                <i :class="fishQuickCreateLoading ? 'fas fa-spinner fa-spin' : 'fas fa-fish'" />
+                <span>创建 Fish Key</span>
+              </button>
+              <button
                 class="flex w-full items-center justify-center gap-2 rounded-lg bg-gradient-to-r from-blue-500 to-blue-600 px-5 py-2 text-sm font-medium text-white shadow-md transition-all duration-200 hover:from-blue-600 hover:to-blue-700 hover:shadow-lg sm:w-auto"
                 @click.stop="openCreateApiKeyModal"
               >
@@ -936,6 +944,15 @@
                               ]"
                             />
                             <span class="ml-1">模型</span>
+                          </button>
+                          <button
+                            v-if="key.dailyCostLimit > 0"
+                            class="rounded px-2 py-1 text-xs font-medium text-cyan-600 transition-colors hover:bg-cyan-50 hover:text-cyan-900 dark:hover:bg-cyan-900/20"
+                            title="重置当日额度"
+                            @click="resetApiKeyDailyUsage(key)"
+                          >
+                            <i class="fas fa-rotate-left" />
+                            <span class="ml-1">重置日额</span>
                           </button>
                           <button
                             class="rounded px-2 py-1 text-xs font-medium text-blue-600 transition-colors hover:bg-blue-50 hover:text-blue-900 dark:hover:bg-blue-900/20"
@@ -2095,6 +2112,130 @@
       @success="handleCreateSuccess"
     />
 
+    <Teleport to="body">
+      <div
+        v-if="showFishQuickCreateModal"
+        class="modal fixed inset-0 z-50 flex items-center justify-center p-4"
+      >
+        <div class="modal-content mx-auto w-full max-w-md p-6">
+          <div class="mb-4 flex items-center justify-between">
+            <div class="flex items-center gap-3">
+              <div
+                class="flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br from-emerald-500 to-teal-600"
+              >
+                <i class="fas fa-fish text-white" />
+              </div>
+              <div>
+                <h3 class="text-lg font-bold text-gray-900 dark:text-gray-100">创建 Fish Key</h3>
+                <p class="text-sm text-gray-600 dark:text-gray-400">
+                  自动设置标签为 Fish，并发不限
+                </p>
+              </div>
+            </div>
+            <button
+              class="text-gray-400 transition-colors hover:text-gray-600 dark:text-gray-500 dark:hover:text-gray-300"
+              :disabled="fishQuickCreateLoading"
+              @click="closeFishQuickCreateModal"
+            >
+              <i class="fas fa-times text-lg" />
+            </button>
+          </div>
+
+          <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <button
+              class="flex w-full items-center justify-between rounded-xl border border-gray-200 bg-white px-4 py-4 text-left transition-colors hover:border-emerald-300 hover:bg-emerald-50 dark:border-gray-700 dark:bg-gray-800 dark:hover:border-emerald-700 dark:hover:bg-emerald-900/30"
+              :disabled="fishQuickCreateLoading"
+              @click="createFishApiKey(1, 60)"
+            >
+              <div>
+                <div class="text-sm font-semibold text-gray-900 dark:text-gray-100">
+                  1 天 · 60 美元
+                </div>
+                <div class="mt-1 text-xs text-gray-500 dark:text-gray-400">并发不限</div>
+              </div>
+              <i
+                :class="
+                  fishQuickCreateLoading && fishQuickCreatePreset === '1-60'
+                    ? 'fas fa-spinner fa-spin text-emerald-500'
+                    : 'fas fa-chevron-right text-gray-400'
+                "
+              />
+            </button>
+
+            <button
+              class="flex w-full items-center justify-between rounded-xl border border-gray-200 bg-white px-4 py-4 text-left transition-colors hover:border-emerald-300 hover:bg-emerald-50 dark:border-gray-700 dark:bg-gray-800 dark:hover:border-emerald-700 dark:hover:bg-emerald-900/30"
+              :disabled="fishQuickCreateLoading"
+              @click="createFishApiKey(1, 120)"
+            >
+              <div>
+                <div class="text-sm font-semibold text-gray-900 dark:text-gray-100">
+                  1 天 · 120 美元
+                </div>
+                <div class="mt-1 text-xs text-gray-500 dark:text-gray-400">并发不限</div>
+              </div>
+              <i
+                :class="
+                  fishQuickCreateLoading && fishQuickCreatePreset === '1-120'
+                    ? 'fas fa-spinner fa-spin text-emerald-500'
+                    : 'fas fa-chevron-right text-gray-400'
+                "
+              />
+            </button>
+
+            <button
+              class="flex w-full items-center justify-between rounded-xl border border-gray-200 bg-white px-4 py-4 text-left transition-colors hover:border-emerald-300 hover:bg-emerald-50 dark:border-gray-700 dark:bg-gray-800 dark:hover:border-emerald-700 dark:hover:bg-emerald-900/30"
+              :disabled="fishQuickCreateLoading"
+              @click="createFishApiKey(7, 60)"
+            >
+              <div>
+                <div class="text-sm font-semibold text-gray-900 dark:text-gray-100">
+                  7 天 · 60 美元
+                </div>
+                <div class="mt-1 text-xs text-gray-500 dark:text-gray-400">并发不限</div>
+              </div>
+              <i
+                :class="
+                  fishQuickCreateLoading && fishQuickCreatePreset === '7-60'
+                    ? 'fas fa-spinner fa-spin text-emerald-500'
+                    : 'fas fa-chevron-right text-gray-400'
+                "
+              />
+            </button>
+
+            <button
+              class="flex w-full items-center justify-between rounded-xl border border-gray-200 bg-white px-4 py-4 text-left transition-colors hover:border-emerald-300 hover:bg-emerald-50 dark:border-gray-700 dark:bg-gray-800 dark:hover:border-emerald-700 dark:hover:bg-emerald-900/30"
+              :disabled="fishQuickCreateLoading"
+              @click="createFishApiKey(7, 120)"
+            >
+              <div>
+                <div class="text-sm font-semibold text-gray-900 dark:text-gray-100">
+                  7 天 · 120 美元
+                </div>
+                <div class="mt-1 text-xs text-gray-500 dark:text-gray-400">并发不限</div>
+              </div>
+              <i
+                :class="
+                  fishQuickCreateLoading && fishQuickCreatePreset === '7-120'
+                    ? 'fas fa-spinner fa-spin text-emerald-500'
+                    : 'fas fa-chevron-right text-gray-400'
+                "
+              />
+            </button>
+          </div>
+
+          <div class="mt-5 flex justify-end">
+            <button
+              class="rounded-lg bg-gray-100 px-4 py-2 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-200 dark:bg-gray-700 dark:text-gray-200 dark:hover:bg-gray-600"
+              :disabled="fishQuickCreateLoading"
+              @click="closeFishQuickCreateModal"
+            >
+              取消
+            </button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
+
     <EditApiKeyModal
       v-if="showEditApiKeyModal"
       :accounts="accounts"
@@ -2349,12 +2490,15 @@ const showEditApiKeyModal = ref(false)
 const showRenewApiKeyModal = ref(false)
 const showNewApiKeyModal = ref(false)
 const showBatchApiKeyModal = ref(false)
+const showFishQuickCreateModal = ref(false)
 const showBatchEditModal = ref(false)
 const showTagManagementModal = ref(false)
 const editingApiKey = ref(null)
 const renewingApiKey = ref(null)
 const newApiKeyData = ref(null)
 const batchApiKeyData = ref([])
+const fishQuickCreateLoading = ref(false)
+const fishQuickCreatePreset = ref(null)
 
 // ConfirmModal 状态
 const showConfirmModal = ref(false)
@@ -3801,6 +3945,60 @@ const openCreateApiKeyModal = () => {
   }
 }
 
+const openFishQuickCreateModal = () => {
+  showFishQuickCreateModal.value = true
+}
+
+const closeFishQuickCreateModal = () => {
+  if (fishQuickCreateLoading.value) return
+  showFishQuickCreateModal.value = false
+  fishQuickCreatePreset.value = null
+}
+
+const formatFishKeyName = () => {
+  const now = new Date()
+  const pad = (value, length = 2) => String(value).padStart(length, '0')
+
+  return `Fish-${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(
+    now.getHours()
+  )}${pad(now.getMinutes())}${pad(now.getSeconds())}-${pad(now.getMilliseconds(), 3)}`
+}
+
+const createFishApiKey = async (days, totalCostLimit) => {
+  fishQuickCreateLoading.value = true
+  fishQuickCreatePreset.value = `${days}-${totalCostLimit}`
+
+  try {
+    const expiresAt = new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString()
+    const payload = {
+      name: `${formatFishKeyName()}-${days}d-${totalCostLimit}usd`,
+      concurrencyLimit: 0,
+      totalCostLimit,
+      tags: ['Fish'],
+      expirationMode: 'fixed',
+      expiresAt
+    }
+
+    const result = await httpApis.createApiKeyApi(payload)
+
+    if (result.success) {
+      showFishQuickCreateModal.value = false
+      newApiKeyData.value = result.data
+      showNewApiKeyModal.value = true
+      showToast('Fish API Key 创建成功', 'success')
+      loadApiKeys()
+      return
+    }
+
+    showToast(result.message || 'Fish API Key 创建失败', 'error')
+  } catch {
+    showToast('Fish API Key 创建失败', 'error')
+  } finally {
+    fishQuickCreateLoading.value = false
+    fishQuickCreatePreset.value = null
+  }
+}
+
 // 打开编辑模态框
 const openEditApiKeyModal = (apiKey) => {
   // 使用缓存的账号数据（如果需要最新数据，用户可以点击"刷新账号"按钮）
@@ -3904,6 +4102,16 @@ const getApiKeyActions = (key) => {
     handler: () => toggleApiKeyStatus(key)
   })
 
+  if (key.dailyCostLimit > 0) {
+    actions.push({
+      key: 'reset-daily-usage',
+      label: '重置日额',
+      icon: 'fa-rotate-left',
+      color: 'cyan',
+      handler: () => resetApiKeyDailyUsage(key)
+    })
+  }
+
   // 删除
   actions.push({
     key: 'delete',
@@ -3948,6 +4156,58 @@ const toggleApiKeyStatus = async (key) => {
     }
   } catch (error) {
     showToast('操作失败', 'error')
+  }
+}
+
+const resetApiKeyLocalDailyStats = (keyId) => {
+  const cached = statsCache.value.get(keyId)
+  if (cached?.stats) {
+    cached.stats = {
+      ...cached.stats,
+      dailyCost: 0,
+      formattedCost:
+        cached.timeRange === 'today' || cached.timeRange === 'custom'
+          ? '$0.00'
+          : cached.stats.formattedCost
+    }
+    statsCache.value.set(keyId, { ...cached })
+  }
+
+  const localKey = apiKeys.value.find((item) => item.id === keyId)
+  if (localKey) {
+    localKey.dailyCost = 0
+  }
+
+  if (apiKeyModelStats.value[keyId] && getApiKeyDateFilter(keyId).preset === 'today') {
+    delete apiKeyModelStats.value[keyId]
+  }
+}
+
+const resetApiKeyDailyUsage = async (key) => {
+  const confirmed = await showConfirm(
+    '重置当日额度',
+    `确定要重置 API Key "${key.name}" 的当日额度吗？这会清空今天的费用统计和今日模型统计。`,
+    '确定重置',
+    '取消',
+    'warning'
+  )
+
+  if (!confirmed) return
+
+  try {
+    const data = await httpApis.resetApiKeyDailyUsageApi(key.id)
+    if (data.success) {
+      resetApiKeyLocalDailyStats(key.id)
+      await loadPageStats()
+      if (expandedApiKeys.value[key.id]) {
+        await loadApiKeyModelStats(key.id, true)
+      }
+      showToast('当日额度已重置', 'success')
+    } else {
+      showToast(data.message || data.error || '重置失败', 'error')
+    }
+  } catch (error) {
+    showToast(error.response?.data?.error || '重置失败', 'error')
   }
 }
 

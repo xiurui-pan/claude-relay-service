@@ -9,10 +9,14 @@ const config = require('../../../config/config')
 const crypto = require('crypto')
 const LRUCache = require('../../utils/lruCache')
 const upstreamErrorHelper = require('../../utils/upstreamErrorHelper')
+const { observeInitialOpenAIStream } = require('../../utils/openaiStreamRetryProbe')
 
 // lastUsedAt 更新节流（每账户 60 秒内最多更新一次，使用 LRU 防止内存泄漏）
 const lastUsedAtThrottle = new LRUCache(1000) // 最多缓存 1000 个账户
 const LAST_USED_AT_THROTTLE_MS = 60000
+const RETRYABLE_UPSTREAM_STATUS = new Set([502, 503, 504])
+const MAX_SAME_ACCOUNT_UPSTREAM_RETRIES = 2
+const SAME_ACCOUNT_RETRY_DELAY_MS = 800
 
 // 抽取缓存写入 token，兼容多种字段命名
 function extractCacheCreationTokens(usageData) {
@@ -43,6 +47,58 @@ function extractCacheCreationTokens(usageData) {
 class OpenAIResponsesRelayService {
   constructor() {
     this.defaultTimeout = config.requestTimeout || 600000
+  }
+
+  async _delay(ms) {
+    await new Promise((resolve) => setTimeout(resolve, ms))
+  }
+
+  _extractErrorDataFromResponseBody(fullResponse) {
+    try {
+      if (fullResponse.includes('data: ')) {
+        const lines = fullResponse.split('\n')
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            const jsonStr = line.slice(6).trim()
+            if (jsonStr && jsonStr !== '[DONE]') {
+              return JSON.parse(jsonStr)
+            }
+          }
+        }
+      } else {
+        return JSON.parse(fullResponse)
+      }
+    } catch (e) {
+      logger.error('Failed to parse error response:', e)
+    }
+
+    return { error: { message: fullResponse || 'Unknown error' } }
+  }
+
+  _buildClientErrorResponse(status, errorData) {
+    const sanitizedError = upstreamErrorHelper.sanitizeErrorForClient(errorData)
+    const fallbackMessage =
+      sanitizedError?.error?.message || sanitizedError?.message || errorData?.error?.message || ''
+
+    if (status === 429) {
+      const resetsInSeconds =
+        errorData?.error?.resets_in_seconds || errorData?.error?.resets_in || null
+      return upstreamErrorHelper.buildFriendlyRateLimitError(resetsInSeconds)
+    }
+
+    if (RETRYABLE_UPSTREAM_STATUS.has(status)) {
+      return upstreamErrorHelper.buildFriendlyUpstreamError(status, fallbackMessage)
+    }
+
+    return sanitizedError
+  }
+
+  _buildRetryableNetworkResult(error) {
+    const status = upstreamErrorHelper.getRetryableNetworkStatus(error)
+    return {
+      status,
+      clientError: upstreamErrorHelper.buildFriendlyNetworkError(status)
+    }
   }
 
   // 节流更新 lastUsedAt
@@ -171,8 +227,144 @@ class OpenAIResponsesRelayService {
         userAgent: headers['User-Agent'] || 'not set'
       })
 
-      // 发送请求
-      const response = await axios(requestOptions)
+      let response = null
+      let sameAccountRetryCount = 0
+      let parsed429Result = null
+      let retryableNetworkError = null
+
+      while (true) {
+        parsed429Result = null
+        retryableNetworkError = null
+
+        try {
+          response = await axios(requestOptions)
+        } catch (error) {
+          if (!upstreamErrorHelper.isRetryableNetworkError(error)) {
+            throw error
+          }
+
+          retryableNetworkError = error
+          const networkStatus = upstreamErrorHelper.getRetryableNetworkStatus(error)
+
+          logger.warn('OpenAI-Responses retryable network error', {
+            accountId: account.id,
+            accountName: account.name,
+            status: networkStatus,
+            code: error.code || error.cause?.code || '',
+            message: error.message || error.cause?.message || '',
+            sameAccountRetryCount,
+            maxSameAccountRetryCount: MAX_SAME_ACCOUNT_UPSTREAM_RETRIES
+          })
+
+          if (sameAccountRetryCount >= MAX_SAME_ACCOUNT_UPSTREAM_RETRIES) {
+            break
+          }
+
+          sameAccountRetryCount += 1
+          logger.warn(
+            `🔄 OpenAI-Responses 建连失败，准备重试当前账号 (${sameAccountRetryCount}/${MAX_SAME_ACCOUNT_UPSTREAM_RETRIES})`
+          )
+          await this._delay(SAME_ACCOUNT_RETRY_DELAY_MS * sameAccountRetryCount)
+          continue
+        }
+
+        if (response.status === 429) {
+          parsed429Result = await this._parse429ErrorResponse(response, req.body?.stream)
+
+          logger.warn('OpenAI-Responses retryable rate limit error', {
+            accountId: account.id,
+            accountName: account.name,
+            status: response.status,
+            sameAccountRetryCount,
+            maxSameAccountRetryCount: MAX_SAME_ACCOUNT_UPSTREAM_RETRIES,
+            resetsInSeconds: parsed429Result.resetsInSeconds || null
+          })
+
+          if (sameAccountRetryCount >= MAX_SAME_ACCOUNT_UPSTREAM_RETRIES) {
+            break
+          }
+
+          sameAccountRetryCount += 1
+          logger.warn(
+            `🔄 OpenAI-Responses 遇到 429，准备重试当前账号 (${sameAccountRetryCount}/${MAX_SAME_ACCOUNT_UPSTREAM_RETRIES})`
+          )
+          await this._delay(SAME_ACCOUNT_RETRY_DELAY_MS * sameAccountRetryCount)
+          continue
+        }
+
+        if (!RETRYABLE_UPSTREAM_STATUS.has(response.status)) {
+          break
+        }
+
+        let retryErrorData = response.data
+        if (response.data && typeof response.data.pipe === 'function') {
+          const chunks = []
+          await new Promise((resolve) => {
+            response.data.on('data', (chunk) => chunks.push(chunk))
+            response.data.on('end', resolve)
+            response.data.on('error', resolve)
+            setTimeout(resolve, 5000)
+          })
+          retryErrorData = this._extractErrorDataFromResponseBody(Buffer.concat(chunks).toString())
+        }
+
+        logger.warn('OpenAI-Responses retryable upstream error', {
+          accountId: account.id,
+          accountName: account.name,
+          status: response.status,
+          sameAccountRetryCount,
+          maxSameAccountRetryCount: MAX_SAME_ACCOUNT_UPSTREAM_RETRIES,
+          errorData: retryErrorData
+        })
+
+        if (sameAccountRetryCount >= MAX_SAME_ACCOUNT_UPSTREAM_RETRIES) {
+          response.data = retryErrorData
+          break
+        }
+
+        sameAccountRetryCount += 1
+        logger.warn(
+          `🔄 OpenAI-Responses upstream ${response.status}，准备重试当前账号 (${sameAccountRetryCount}/${MAX_SAME_ACCOUNT_UPSTREAM_RETRIES})`
+        )
+        await this._delay(SAME_ACCOUNT_RETRY_DELAY_MS * sameAccountRetryCount)
+      }
+
+      if (retryableNetworkError) {
+        if (account?.id) {
+          const oaiAutoProtectionDisabled =
+            account?.disableAutoProtection === true || account?.disableAutoProtection === 'true'
+          if (!oaiAutoProtectionDisabled) {
+            await upstreamErrorHelper
+              .markTempUnavailable(
+                account.id,
+                'openai-responses',
+                upstreamErrorHelper.getRetryableNetworkStatus(retryableNetworkError)
+              )
+              .catch(() => {})
+          }
+          if (sessionHash) {
+            await unifiedOpenAIScheduler._deleteSessionMapping(sessionHash).catch(() => {})
+          }
+        }
+
+        const retryableNetworkResult = this._buildRetryableNetworkResult(retryableNetworkError)
+
+        req.removeListener('close', handleClientDisconnect)
+        res.removeListener('close', handleClientDisconnect)
+
+        if (options.returnRetryableUpstreamResult) {
+          return {
+            retryableUpstreamError: true,
+            status: retryableNetworkResult.status,
+            errorData: retryableNetworkResult.clientError,
+            clientError: retryableNetworkResult.clientError
+          }
+        }
+
+        return res
+          .status(retryableNetworkResult.status)
+          .json(retryableNetworkResult.clientError)
+      }
 
       // 处理 429 限流错误
       if (response.status === 429) {
@@ -180,7 +372,8 @@ class OpenAIResponsesRelayService {
           account,
           response,
           req.body?.stream,
-          sessionHash
+          sessionHash,
+          parsed429Result
         )
 
         const oaiAutoProtectionDisabled =
@@ -200,19 +393,11 @@ class OpenAIResponsesRelayService {
           return {
             rateLimited: true,
             resetsInSeconds,
-            errorData
+            errorData: this._buildClientErrorResponse(429, errorData)
           }
         }
 
-        // 返回错误响应（使用处理后的数据，避免循环引用）
-        const errorResponse = errorData || {
-          error: {
-            message: 'Rate limit exceeded',
-            type: 'rate_limit_error',
-            code: 'rate_limit_exceeded',
-            resets_in_seconds: resetsInSeconds
-          }
-        }
+        const errorResponse = this._buildClientErrorResponse(429, errorData)
         return res.status(429).json(errorResponse)
       }
 
@@ -230,29 +415,7 @@ class OpenAIResponsesRelayService {
             setTimeout(resolve, 5000) // 超时保护
           })
           const fullResponse = Buffer.concat(chunks).toString()
-
-          // 尝试解析错误响应
-          try {
-            if (fullResponse.includes('data: ')) {
-              // SSE格式
-              const lines = fullResponse.split('\n')
-              for (const line of lines) {
-                if (line.startsWith('data: ')) {
-                  const jsonStr = line.slice(6).trim()
-                  if (jsonStr && jsonStr !== '[DONE]') {
-                    errorData = JSON.parse(jsonStr)
-                    break
-                  }
-                }
-              }
-            } else {
-              // 普通JSON
-              errorData = JSON.parse(fullResponse)
-            }
-          } catch (e) {
-            logger.error('Failed to parse error response:', e)
-            errorData = { error: { message: fullResponse || 'Unknown error' } }
-          }
+          errorData = this._extractErrorDataFromResponseBody(fullResponse)
         }
 
         logger.error('OpenAI-Responses API error', {
@@ -331,20 +494,143 @@ class OpenAIResponsesRelayService {
           }
         }
 
+        if (
+          RETRYABLE_UPSTREAM_STATUS.has(response.status) &&
+          options.returnRetryableUpstreamResult
+        ) {
+          // 清理监听器
+          req.removeListener('close', handleClientDisconnect)
+          res.removeListener('close', handleClientDisconnect)
+
+          return {
+            retryableUpstreamError: true,
+            status: response.status,
+            errorData,
+            clientError: this._buildClientErrorResponse(response.status, errorData)
+          }
+        }
+
         // 清理监听器
         req.removeListener('close', handleClientDisconnect)
         res.removeListener('close', handleClientDisconnect)
 
-        return res
-          .status(response.status)
-          .json(upstreamErrorHelper.sanitizeErrorForClient(errorData))
+        return res.status(response.status).json(this._buildClientErrorResponse(response.status, errorData))
       }
 
-      // 更新最后使用时间（节流）
-      await this._throttledUpdateLastUsedAt(account.id)
-
-      // 处理流式响应
+      // 流式响应先做一小段早期探测，避免上游在 200 后立刻发 error 事件或断流时
+      // 直接把模糊的 stream_read_error 传给客户端，错过当前账号重试和切号逻辑。
       if (req.body?.stream && response.data && typeof response.data.pipe === 'function') {
+        const streamProbeResult = await observeInitialOpenAIStream(response.data)
+
+        if (streamProbeResult.action === 'rate_limit') {
+          const resetsInSeconds = streamProbeResult.errorInfo?.resetsInSeconds || null
+          const errorData =
+            streamProbeResult.errorInfo?.payload ||
+            upstreamErrorHelper.buildFriendlyRateLimitError(resetsInSeconds)
+
+          const oaiAutoProtectionDisabled =
+            account?.disableAutoProtection === true || account?.disableAutoProtection === 'true'
+          if (!oaiAutoProtectionDisabled) {
+            await upstreamErrorHelper
+              .markTempUnavailable(
+                account.id,
+                'openai-responses',
+                429,
+                resetsInSeconds || null,
+                {
+                  source: 'openai_responses_stream_probe',
+                  message: streamProbeResult.errorInfo?.message || '',
+                  errorBody: errorData
+                }
+              )
+              .catch(() => {})
+          }
+
+          if (options.returnRateLimitResult) {
+            req.removeListener('close', handleClientDisconnect)
+            res.removeListener('close', handleClientDisconnect)
+            return {
+              rateLimited: true,
+              resetsInSeconds,
+              errorData: this._buildClientErrorResponse(429, errorData)
+            }
+          }
+
+          req.removeListener('close', handleClientDisconnect)
+          res.removeListener('close', handleClientDisconnect)
+          return res.status(429).json(this._buildClientErrorResponse(429, errorData))
+        }
+
+        if (streamProbeResult.action === 'unauthorized') {
+          const errorData =
+            streamProbeResult.errorInfo?.payload ||
+            this._buildClientErrorResponse(
+              streamProbeResult.errorInfo?.statusCode || 401,
+              {
+                error: {
+                  message: streamProbeResult.errorInfo?.message || 'Unauthorized'
+                }
+              }
+            )
+
+          const oaiAutoProtectionDisabled =
+            account?.disableAutoProtection === true || account?.disableAutoProtection === 'true'
+          if (!oaiAutoProtectionDisabled) {
+            await upstreamErrorHelper
+              .markTempUnavailable(account.id, 'openai-responses', 401)
+              .catch(() => {})
+          }
+          if (sessionHash) {
+            await unifiedOpenAIScheduler._deleteSessionMapping(sessionHash).catch(() => {})
+          }
+
+          req.removeListener('close', handleClientDisconnect)
+          res.removeListener('close', handleClientDisconnect)
+          return res.status(streamProbeResult.errorInfo?.statusCode || 401).json(errorData)
+        }
+
+        if (streamProbeResult.action === 'retryable_upstream_error') {
+          const statusCode = streamProbeResult.errorInfo?.statusCode || 502
+          const errorData =
+            streamProbeResult.errorInfo?.payload ||
+            upstreamErrorHelper.buildFriendlyUpstreamError(
+              statusCode,
+              streamProbeResult.errorInfo?.message || 'Upstream request failed'
+            )
+
+          const oaiAutoProtectionDisabled =
+            account?.disableAutoProtection === true || account?.disableAutoProtection === 'true'
+          if (!oaiAutoProtectionDisabled) {
+            await upstreamErrorHelper
+              .markTempUnavailable(account.id, 'openai-responses', statusCode, null, {
+                source: 'openai_responses_stream_probe',
+                message: streamProbeResult.errorInfo?.message || '',
+                errorBody: errorData
+              })
+              .catch(() => {})
+          }
+          if (sessionHash) {
+            await unifiedOpenAIScheduler._deleteSessionMapping(sessionHash).catch(() => {})
+          }
+
+          req.removeListener('close', handleClientDisconnect)
+          res.removeListener('close', handleClientDisconnect)
+
+          if (options.returnRetryableUpstreamResult) {
+            return {
+              retryableUpstreamError: true,
+              status: statusCode,
+              errorData,
+              clientError: this._buildClientErrorResponse(statusCode, errorData)
+            }
+          }
+
+          return res.status(statusCode).json(this._buildClientErrorResponse(statusCode, errorData))
+        }
+
+        // 更新最后使用时间（节流）
+        await this._throttledUpdateLastUsedAt(account.id)
+
         return this._handleStreamResponse(
           response,
           res,
@@ -352,12 +638,17 @@ class OpenAIResponsesRelayService {
           apiKeyData,
           req.body?.model,
           handleClientDisconnect,
-          req
+          req,
+          streamProbeResult.bufferedChunks || [],
+          streamProbeResult.streamEnded === true
         )
       }
 
+      // 更新最后使用时间（节流）
+      await this._throttledUpdateLastUsedAt(account.id)
+
       // 处理非流式响应
-      return this._handleNormalResponse(response, res, account, apiKeyData, req.body?.model)
+      return this._handleNormalResponse(response, res, account, apiKeyData, req.body?.model, req)
     } catch (error) {
       // 清理 AbortController
       if (abortController && !abortController.signal.aborted) {
@@ -373,15 +664,23 @@ class OpenAIResponsesRelayService {
       }
       logger.error('OpenAI-Responses relay error:', errorInfo)
 
-      // 检查是否是网络错误
-      if (error.code === 'ECONNREFUSED' || error.code === 'ETIMEDOUT') {
+      const retryableNetworkError = upstreamErrorHelper.isRetryableNetworkError(error)
+
+      if (retryableNetworkError) {
         if (account?.id) {
           const oaiAutoProtectionDisabled =
             account?.disableAutoProtection === true || account?.disableAutoProtection === 'true'
           if (!oaiAutoProtectionDisabled) {
             await upstreamErrorHelper
-              .markTempUnavailable(account.id, 'openai-responses', 503)
+              .markTempUnavailable(
+                account.id,
+                'openai-responses',
+                upstreamErrorHelper.getRetryableNetworkStatus(error)
+              )
               .catch(() => {})
+          }
+          if (sessionHash) {
+            await unifiedOpenAIScheduler._deleteSessionMapping(sessionHash).catch(() => {})
           }
         }
       }
@@ -462,13 +761,30 @@ class OpenAIResponsesRelayService {
           return res.status(401).json(unauthorizedResponse)
         }
 
-        return res.status(status).json(upstreamErrorHelper.sanitizeErrorForClient(errorData))
+        return res.status(status).json(this._buildClientErrorResponse(status, errorData))
+      }
+
+      if (retryableNetworkError) {
+        const retryableNetworkResult = this._buildRetryableNetworkResult(error)
+
+        if (options.returnRetryableUpstreamResult) {
+          return {
+            retryableUpstreamError: true,
+            status: retryableNetworkResult.status,
+            errorData: retryableNetworkResult.clientError,
+            clientError: retryableNetworkResult.clientError
+          }
+        }
+
+        return res
+          .status(retryableNetworkResult.status)
+          .json(retryableNetworkResult.clientError)
       }
 
       // 其他错误
       return res.status(500).json({
         error: {
-          message: 'Internal server error',
+          message: '服务内部错误，请稍后重试',
           type: 'internal_error',
           details: error.message
         }
@@ -484,7 +800,9 @@ class OpenAIResponsesRelayService {
     apiKeyData,
     requestedModel,
     handleClientDisconnect,
-    req
+    req,
+    initialChunks = [],
+    streamAlreadyEnded = false
   ) {
     // 设置 SSE 响应头
     res.setHeader('Content-Type', 'text/event-stream')
@@ -557,7 +875,7 @@ class OpenAIResponsesRelayService {
     }
 
     // 监听数据流
-    response.data.on('data', (chunk) => {
+    const processChunk = (chunk) => {
       try {
         const chunkStr = chunk.toString()
 
@@ -583,7 +901,9 @@ class OpenAIResponsesRelayService {
       } catch (error) {
         logger.error('Error processing stream chunk:', error)
       }
-    })
+    }
+
+    response.data.on('data', processChunk)
 
     response.data.on('end', async () => {
       streamEnded = true
@@ -631,7 +951,7 @@ class OpenAIResponsesRelayService {
           await openaiResponsesAccountService.updateAccountUsage(account.id, totalTokens)
 
           // 更新账户使用额度（如果设置了额度限制）
-          if (parseFloat(account.dailyQuota) > 0) {
+          if (parseFloat(account.dailyQuota) > 0 || parseFloat(account.totalQuota) > 0) {
             // 使用CostCalculator正确计算费用（考虑缓存token的不同价格）
             const CostCalculator = require('../../utils/costCalculator')
             const costInfo = CostCalculator.calculateCost(
@@ -714,10 +1034,25 @@ class OpenAIResponsesRelayService {
 
     req.on('close', cleanup)
     req.on('aborted', cleanup)
+
+    for (const chunk of initialChunks) {
+      processChunk(chunk)
+    }
+
+    if (streamAlreadyEnded) {
+      response.data.emit('end')
+      return
+    }
+
+    try {
+      response.data.resume?.()
+    } catch (_) {
+      //
+    }
   }
 
   // 处理非流式响应
-  async _handleNormalResponse(response, res, account, apiKeyData, requestedModel) {
+  async _handleNormalResponse(response, res, account, apiKeyData, requestedModel, req = null) {
     const responseData = response.data
 
     // 提取 usage 数据和实际 model
@@ -763,7 +1098,7 @@ class OpenAIResponsesRelayService {
         await openaiResponsesAccountService.updateAccountUsage(account.id, totalTokens)
 
         // 更新账户使用额度（如果设置了额度限制）
-        if (parseFloat(account.dailyQuota) > 0) {
+        if (parseFloat(account.dailyQuota) > 0 || parseFloat(account.totalQuota) > 0) {
           // 使用CostCalculator正确计算费用（考虑缓存token的不同价格）
           const CostCalculator = require('../../utils/costCalculator')
           const costInfo = CostCalculator.calculateCost(
@@ -794,8 +1129,7 @@ class OpenAIResponsesRelayService {
     })
   }
 
-  // 处理 429 限流错误
-  async _handle429Error(account, response, isStream = false, sessionHash = null) {
+  async _parse429ErrorResponse(response, isStream = false) {
     let resetsInSeconds = null
     let errorData = null
 
@@ -876,6 +1210,16 @@ class OpenAIResponsesRelayService {
     } catch (e) {
       logger.error('⚠️ Failed to parse rate limit error:', e)
     }
+
+    return { resetsInSeconds, errorData }
+  }
+
+  // 处理 429 限流错误
+  async _handle429Error(account, response, isStream = false, sessionHash = null, parsedResult = null) {
+    const {
+      resetsInSeconds = null,
+      errorData = null
+    } = parsedResult || (await this._parse429ErrorResponse(response, isStream))
 
     // 使用统一调度器标记账户为限流状态（与普通OpenAI账号保持一致）
     await unifiedOpenAIScheduler.markAccountRateLimited(

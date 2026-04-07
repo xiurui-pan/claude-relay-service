@@ -54,6 +54,11 @@ const ERROR_MATCHERS = [
 
   // 模型错误
   { pattern: /model.*not.*found|model.*unavailable|unsupported.*model/i, code: 'E006' },
+  { pattern: /no available openai accounts support the requested model/i, code: 'E006' },
+  {
+    pattern: /no available openai accounts are currently usable for model|no available openai accounts/i,
+    code: 'E001'
+  },
 
   // 请求错误
   { pattern: /bad.*request|invalid.*request|invalid.*argument|malformed/i, code: 'E005' },
@@ -61,6 +66,7 @@ const ERROR_MATCHERS = [
 
   // 上游错误
   { pattern: /upstream|502|bad.*gateway/i, code: 'E007' },
+  { pattern: /上游服务暂时不可用|upstream service temporarily unavailable/i, code: 'E007' },
   { pattern: /503|service.*unavailable/i, code: 'E001' }
 ]
 

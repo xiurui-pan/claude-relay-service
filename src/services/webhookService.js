@@ -535,6 +535,7 @@ class WebhookService {
   getNotificationTitle(type) {
     const titles = {
       accountAnomaly: '⚠️ 账号异常通知',
+      accountRateLimited: '⏱️ 账号限流通知',
       quotaWarning: '📊 配额警告',
       systemError: '❌ 系统错误',
       securityAlert: '🔒 安全警报',
@@ -551,6 +552,7 @@ class WebhookService {
   getBarkLevel(type) {
     const levels = {
       accountAnomaly: 'timeSensitive',
+      accountRateLimited: 'active',
       quotaWarning: 'active',
       systemError: 'critical',
       securityAlert: 'critical',
@@ -567,6 +569,7 @@ class WebhookService {
   getBarkSound(type) {
     const sounds = {
       accountAnomaly: 'alarm',
+      accountRateLimited: 'bell',
       quotaWarning: 'bell',
       systemError: 'alert',
       securityAlert: 'alarm',
@@ -825,6 +828,7 @@ class WebhookService {
   getFeishuCardColor(type) {
     const colors = {
       accountAnomaly: 'orange',
+      accountRateLimited: 'yellow',
       quotaWarning: 'yellow',
       systemError: 'red',
       securityAlert: 'red',
@@ -841,6 +845,7 @@ class WebhookService {
   getSlackEmoji(type) {
     const emojis = {
       accountAnomaly: ':warning:',
+      accountRateLimited: ':hourglass_flowing_sand:',
       quotaWarning: ':chart_with_downwards_trend:',
       systemError: ':x:',
       securityAlert: ':lock:',
@@ -857,6 +862,7 @@ class WebhookService {
   getDiscordColor(type) {
     const colors = {
       accountAnomaly: 0xff9800, // 橙色
+      accountRateLimited: 0xf59e0b, // 琥珀色
       quotaWarning: 0xffeb3b, // 黄色
       systemError: 0xf44336, // 红色
       securityAlert: 0xf44336, // 红色

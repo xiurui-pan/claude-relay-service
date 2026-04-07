@@ -3129,7 +3129,10 @@ const handleBalanceRefreshed = (accountId, balanceInfo) => {
 
 // 余额请求错误回调（仅提示，不中断页面）
 const handleBalanceError = (_accountId, error) => {
-  const message = error?.message || '余额查询失败'
+  const rawMessage = error?.message || ''
+  const message = /已过期|expired|401|unauthorized/i.test(rawMessage)
+    ? '余额暂时无法获取，请检查账号状态或稍后重试'
+    : rawMessage || '余额暂时无法获取，请稍后重试'
   showToast(message, 'error')
 }
 

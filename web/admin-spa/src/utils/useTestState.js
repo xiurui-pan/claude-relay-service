@@ -53,8 +53,41 @@ export const useTestState = () => {
   const statusIconClass = computed(() => currentStyle.value.iconColor)
   const statusTextClass = computed(() => currentStyle.value.text)
 
+  const finishTest = (status, message = '') => {
+    testStatus.value = status
+    if (status === 'error') {
+      errorMessage.value = message || '测试失败'
+    }
+    testDuration.value = Date.now() - testStartTime.value
+  }
+
+  const extractErrorMessage = (errorData, fallback) => {
+    if (!errorData || typeof errorData !== 'object') {
+      return fallback
+    }
+    if (typeof errorData.message === 'string' && errorData.message) {
+      return errorData.message
+    }
+    if (typeof errorData.error === 'string' && errorData.error) {
+      return errorData.error
+    }
+    if (typeof errorData.error?.message === 'string' && errorData.error.message) {
+      return errorData.error.message
+    }
+    if (typeof errorData.msg === 'string' && errorData.msg) {
+      return errorData.msg
+    }
+    if (typeof errorData.msg?.message === 'string' && errorData.msg.message) {
+      return errorData.msg.message
+    }
+    if (typeof errorData.msg?.error?.message === 'string' && errorData.msg.error.message) {
+      return errorData.msg.error.message
+    }
+    return fallback
+  }
+
   // ========== SSE 事件处理 ==========
-  const handleSSEEvent = (data) => {
+  const handleWrappedSSEEvent = (data) => {
     switch (data.type) {
       case 'test_start':
         break
@@ -64,24 +97,61 @@ export const useTestState = () => {
       case 'message_stop':
         break
       case 'test_complete':
-        testDuration.value = Date.now() - testStartTime.value
         if (data.success) {
-          testStatus.value = 'success'
+          finishTest('success')
         } else {
-          testStatus.value = 'error'
-          errorMessage.value = data.error || '测试失败'
+          finishTest('error', data.error || '测试失败')
         }
         break
       case 'error':
-        testStatus.value = 'error'
-        errorMessage.value = data.error || '未知错误'
-        testDuration.value = Date.now() - testStartTime.value
+        finishTest('error', data.error || '未知错误')
+        break
+    }
+  }
+
+  const appendOpenAIText = (data) => {
+    if (typeof data.delta === 'string' && data.delta) {
+      responseText.value += data.delta
+      return
+    }
+    if (typeof data.delta?.text === 'string' && data.delta.text) {
+      responseText.value += data.delta.text
+      return
+    }
+    if (typeof data.part?.text === 'string' && data.part.text) {
+      responseText.value += data.part.text
+    }
+  }
+
+  const handleOpenAIResponsesEvent = (eventName, data) => {
+    const effectiveType = eventName || data?.type
+
+    switch (effectiveType) {
+      case 'response.output_text.delta':
+      case 'response.content_part.delta':
+      case 'response.output_text.added':
+      case 'response.content_part.added':
+        appendOpenAIText(data || {})
+        break
+      case 'response.completed':
+        finishTest('success')
+        break
+      case 'response.failed':
+      case 'response.incomplete':
+      case 'error':
+        finishTest(
+          'error',
+          extractErrorMessage(data, data?.status_details?.error?.message || '测试失败')
+        )
+        break
+      default:
         break
     }
   }
 
   // ========== SSE 流读取 ==========
-  const readSSEStream = async (response) => {
+  const readSSEStream = async (response, options = {}) => {
+    const { mode = 'wrapped' } = options
     const reader = response.body.getReader()
     const decoder = new TextDecoder()
     let streamDone = false
@@ -91,38 +161,109 @@ export const useTestState = () => {
       const { done, value } = await reader.read()
       if (done) {
         streamDone = true
-        // 处理缓冲区中剩余的数据
-        if (buffer.trim()) {
-          processSSELine(buffer)
-        }
+        processSSEBuffer(buffer, mode, true)
         continue
       }
 
       buffer += decoder.decode(value, { stream: true })
-      const lines = buffer.split('\n')
-      // 最后一行可能不完整，保留在缓冲区
-      buffer = lines.pop() || ''
+      buffer = processSSEBuffer(buffer, mode)
+    }
 
-      for (const line of lines) {
-        processSSELine(line)
+    if (testStatus.value === 'testing') {
+      if (mode === 'openaiResponses') {
+        finishTest('success')
+      } else if (responseText.value) {
+        finishTest('success')
       }
     }
   }
 
-  const processSSELine = (line) => {
-    if (line.startsWith('data: ')) {
-      try {
-        const data = JSON.parse(line.substring(6))
-        handleSSEEvent(data)
-      } catch {
-        // 忽略解析错误
+  const processSSEBuffer = (buffer, mode, flush = false) => {
+    const normalizedBuffer = buffer.replace(/\r\n/g, '\n')
+    const chunks = normalizedBuffer.split('\n\n')
+    const pending = flush ? '' : chunks.pop() || ''
+
+    for (const chunk of chunks) {
+      processSSEChunk(chunk, mode)
+    }
+
+    if (flush && pending.trim()) {
+      processSSEChunk(pending, mode)
+    }
+
+    return pending
+  }
+
+  const processSSEChunk = (chunk, mode) => {
+    const lines = chunk.split('\n')
+    let eventName = ''
+    const dataLines = []
+
+    for (const rawLine of lines) {
+      const line = rawLine.trimEnd()
+      if (!line) {
+        continue
       }
+      if (line.startsWith(':')) {
+        continue
+      }
+      if (line.startsWith('event:')) {
+        eventName = line.substring(6).trim()
+        continue
+      }
+      if (line.startsWith('data:')) {
+        dataLines.push(line.substring(5).trimStart())
+      }
+    }
+
+    if (!dataLines.length) {
+      return
+    }
+
+    const payload = dataLines.join('\n')
+    if (!payload || payload === '[DONE]') {
+      return
+    }
+
+    try {
+      const data = JSON.parse(payload)
+      if (mode === 'openaiResponses') {
+        handleOpenAIResponsesEvent(eventName, data)
+      } else {
+        handleWrappedSSEEvent(data)
+      }
+    } catch {
+      if (mode === 'openaiResponses' && payload) {
+        responseText.value += payload
+      }
+    }
+  }
+
+  const parseErrorResponse = async (response) => {
+    const fallback = `HTTP ${response.status}`
+    const contentType = response.headers.get('content-type') || ''
+    if (contentType.includes('application/json')) {
+      try {
+        const errorData = await response.json()
+        return extractErrorMessage(errorData, fallback)
+      } catch {
+        return fallback
+      }
+    }
+    const text = await response.text().catch(() => '')
+    if (!text) {
+      return fallback
+    }
+    try {
+      return extractErrorMessage(JSON.parse(text), fallback)
+    } catch {
+      return text.length <= 300 ? text : fallback
     }
   }
 
   // ========== 通用测试请求 ==========
   const sendTestRequest = async (endpoint, payload, options = {}) => {
-    const { useSSE = true, headers = {} } = options
+    const { useSSE = true, headers = {}, sseMode = 'wrapped' } = options
 
     // 重置状态
     testStatus.value = 'testing'
@@ -146,29 +287,24 @@ export const useTestState = () => {
       })
 
       if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}))
-        throw new Error(errorData.message || errorData.error || `HTTP ${response.status}`)
+        throw new Error(await parseErrorResponse(response))
       }
 
       if (useSSE) {
-        await readSSEStream(response)
+        await readSSEStream(response, { mode: sseMode })
       } else {
         // JSON 响应
         const data = await response.json()
-        testDuration.value = Date.now() - testStartTime.value
         if (data.success) {
-          testStatus.value = 'success'
+          finishTest('success')
           responseText.value = data.data?.responseText || 'Test passed'
         } else {
-          testStatus.value = 'error'
-          errorMessage.value = data.message || 'Test failed'
+          finishTest('error', data.message || 'Test failed')
         }
       }
     } catch (err) {
       if (err.name === 'AbortError') return
-      testStatus.value = 'error'
-      errorMessage.value = err.message || '连接失败'
-      testDuration.value = Date.now() - testStartTime.value
+      finishTest('error', err.message || '连接失败')
     }
   }
 

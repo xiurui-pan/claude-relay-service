@@ -2,9 +2,18 @@ const express = require('express')
 const cors = require('cors')
 const helmet = require('helmet')
 const compression = require('compression')
+const bytes = require('bytes')
+const contentType = require('content-type')
 const path = require('path')
 const fs = require('fs')
+const http = require('http')
+const https = require('https')
 const bcrypt = require('bcryptjs')
+const createError = require('http-errors')
+const iconv = require('iconv-lite')
+const getBody = require('raw-body')
+const typeis = require('type-is')
+const zlib = require('zlib')
 
 const config = require('../config/config')
 const logger = require('./utils/logger')
@@ -39,6 +48,207 @@ const {
   requestSizeLimit
 } = require('./middleware/auth')
 const { browserFallbackMiddleware } = require('./middleware/browserFallback')
+
+const JSON_BODY_LIMIT = bytes.parse('100mb')
+const JSON_FIRST_CHAR_REGEXP = /^\s*(\S)/
+const MIROFLOW_PROXY_TARGET = process.env.MIROFLOW_PROXY_TARGET || 'http://127.0.0.1:18001'
+
+function verifyJsonBody(req, res, buf, encoding) {
+  if (buf && buf.length && !buf.toString(encoding || 'utf8').trim()) {
+    throw new Error('Invalid JSON: empty body')
+  }
+}
+
+function parseStrictJson(body) {
+  if (body.length === 0) {
+    return {}
+  }
+
+  const first = JSON_FIRST_CHAR_REGEXP.exec(body)?.[1]
+  if (first !== '{' && first !== '[') {
+    throw new SyntaxError(`Unexpected token ${first} in JSON at position 0`)
+  }
+
+  return JSON.parse(body)
+}
+
+async function parseZstdJsonBody(req, res, next) {
+  if (req._body) {
+    next()
+    return
+  }
+
+  const contentEncoding = (req.headers['content-encoding'] || 'identity').toLowerCase()
+  if (contentEncoding !== 'zstd') {
+    next()
+    return
+  }
+
+  if (!typeis.hasBody(req) || !typeis.is(req, ['application/json', 'application/*+json'])) {
+    next()
+    return
+  }
+
+  let charset = 'utf-8'
+  try {
+    charset = (contentType.parse(req).parameters.charset || 'utf-8').toLowerCase()
+  } catch {
+    charset = 'utf-8'
+  }
+
+  if (!charset.startsWith('utf-')) {
+    next(
+      createError(415, `unsupported charset "${charset.toUpperCase()}"`, {
+        charset,
+        type: 'charset.unsupported'
+      })
+    )
+    return
+  }
+
+  if (!iconv.encodingExists(charset)) {
+    next(
+      createError(415, `unsupported charset "${charset.toUpperCase()}"`, {
+        charset,
+        type: 'charset.unsupported'
+      })
+    )
+    return
+  }
+
+  try {
+    const compressedBody = await getBody(req, {
+      encoding: null,
+      limit: JSON_BODY_LIMIT
+    })
+    const rawBody = zlib.zstdDecompressSync(compressedBody)
+
+    if (rawBody.length > JSON_BODY_LIMIT) {
+      throw createError(413, 'request entity too large', {
+        limit: JSON_BODY_LIMIT,
+        length: rawBody.length,
+        type: 'entity.too.large'
+      })
+    }
+
+    verifyJsonBody(req, res, rawBody, charset)
+
+    const body = iconv.decode(rawBody, charset)
+    req.body = parseStrictJson(body)
+    req._body = true
+    req.headers['content-length'] = String(rawBody.length)
+    delete req.headers['content-encoding']
+
+    next()
+  } catch (error) {
+    if (error.status && error.status >= 400 && error.status < 600) {
+      next(error)
+      return
+    }
+
+    if (error.type === 'entity.too.large') {
+      next(
+        createError(413, error, {
+          type: 'entity.too.large'
+        })
+      )
+      return
+    }
+
+    if (error instanceof SyntaxError) {
+      next(
+        createError(400, error, {
+          type: 'entity.parse.failed'
+        })
+      )
+      return
+    }
+
+    if (
+      String(error.message || '')
+        .toLowerCase()
+        .includes('zstd')
+    ) {
+      next(
+        createError(400, error, {
+          type: 'entity.parse.failed'
+        })
+      )
+      return
+    }
+
+    next(createError(400, error))
+  }
+}
+
+function createReverseProxyMiddleware({ mountPath, targetBaseUrl, targetPrefix = '' }) {
+  const upstream = new URL(targetBaseUrl)
+  const transport = upstream.protocol === 'https:' ? https : http
+
+  return (req, res) => {
+    let upstreamPath = req.originalUrl.slice(mountPath.length) || '/'
+    if (!upstreamPath.startsWith('/')) {
+      upstreamPath = `/${upstreamPath}`
+    }
+    upstreamPath = `${targetPrefix}${upstreamPath}`
+
+    const headers = {
+      ...req.headers,
+      host: upstream.host,
+      'x-forwarded-host': req.headers.host || '',
+      'x-forwarded-proto': req.protocol,
+      'x-forwarded-for': req.headers['x-forwarded-for']
+        ? `${req.headers['x-forwarded-for']}, ${req.socket.remoteAddress}`
+        : req.socket.remoteAddress || ''
+    }
+
+    const proxyReq = transport.request(
+      {
+        protocol: upstream.protocol,
+        hostname: upstream.hostname,
+        port: upstream.port || (upstream.protocol === 'https:' ? 443 : 80),
+        method: req.method,
+        path: upstreamPath,
+        headers
+      },
+      (proxyRes) => {
+        const responseHeaders = { ...proxyRes.headers }
+        if (
+          typeof responseHeaders.location === 'string' &&
+          responseHeaders.location.startsWith('/')
+        ) {
+          responseHeaders.location = `${mountPath}${responseHeaders.location}`
+        }
+
+        res.status(proxyRes.statusCode || 502)
+        Object.entries(responseHeaders).forEach(([key, value]) => {
+          if (value !== undefined) {
+            res.setHeader(key, value)
+          }
+        })
+        proxyRes.pipe(res)
+      }
+    )
+
+    proxyReq.on('error', (error) => {
+      logger.error(`❌ MiroFlow proxy error for ${req.originalUrl}:`, error.message)
+      if (!res.headersSent) {
+        res.status(502).json({
+          error: 'MiroFlow upstream unavailable',
+          message: error.message
+        })
+      } else {
+        res.end()
+      }
+    })
+
+    req.on('aborted', () => {
+      proxyReq.destroy()
+    })
+
+    req.pipe(proxyReq)
+  }
+}
 
 class Application {
   constructor() {
@@ -229,16 +439,32 @@ class Application {
         }
       }
 
+      // MiroFlow 子路径代理，避免和当前 CRS 路由冲突
+      this.app.get(/^\/miroflow$/, (req, res) => {
+        res.redirect(301, '/miroflow/')
+      })
+      this.app.use(
+        '/miroflow-api',
+        createReverseProxyMiddleware({
+          mountPath: '/miroflow-api',
+          targetBaseUrl: MIROFLOW_PROXY_TARGET
+        })
+      )
+      this.app.use(
+        '/miroflow',
+        createReverseProxyMiddleware({
+          mountPath: '/miroflow',
+          targetBaseUrl: MIROFLOW_PROXY_TARGET
+        })
+      )
+      logger.info(`✅ MiroFlow proxy mounted at /miroflow -> ${MIROFLOW_PROXY_TARGET}`)
+
       // 🔧 基础中间件
+      this.app.use(parseZstdJsonBody)
       this.app.use(
         express.json({
           limit: '100mb',
-          verify: (req, res, buf, encoding) => {
-            // 验证JSON格式
-            if (buf && buf.length && !buf.toString(encoding || 'utf8').trim()) {
-              throw new Error('Invalid JSON: empty body')
-            }
-          }
+          verify: verifyJsonBody
         })
       )
       this.app.use(express.urlencoded({ extended: true, limit: '100mb' }))

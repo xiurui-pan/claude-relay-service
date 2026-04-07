@@ -138,17 +138,11 @@ router.post('/api/user-stats', async (req, res) => {
         })
       }
 
-      // 检查是否过期
-      if (keyData.expiresAt && new Date() > new Date(keyData.expiresAt)) {
-        const keyName = keyData.name || 'Unknown'
-        return res.status(403).json({
-          error: 'API key has expired',
-          message: `API Key "${keyName}" 已过期`,
-          keyName
-        })
-      }
-
       keyId = apiId
+      const isExpired =
+        keyData.isActivated === 'true' &&
+        keyData.expiresAt &&
+        new Date() > new Date(keyData.expiresAt)
 
       // 获取使用统计
       const usage = await redis.getUsageStats(keyId)
@@ -183,6 +177,7 @@ router.post('/api/user-stats', async (req, res) => {
         rateLimitRequests: parseInt(keyData.rateLimitRequests) || 0,
         dailyCostLimit: parseFloat(keyData.dailyCostLimit) || 0,
         totalCostLimit: parseFloat(keyData.totalCostLimit) || 0,
+        dailyResetCredits: parseInt(keyData.dailyResetCredits || 0),
         dailyCost: dailyCost || 0,
         totalCost: costStats.total || 0,
         enableModelRestriction: keyData.enableModelRestriction === 'true',
@@ -193,6 +188,7 @@ router.post('/api/user-stats', async (req, res) => {
         // 添加激活相关字段
         expirationMode: keyData.expirationMode || 'fixed',
         isActivated: keyData.isActivated === 'true',
+        isExpired,
         activationDays: parseInt(keyData.activationDays || 0),
         activatedAt: keyData.activatedAt || null,
         usage // 使用完整的 usage 数据，而不是只有 total
@@ -485,6 +481,11 @@ router.post('/api/user-stats', async (req, res) => {
       isActivated: fullKeyData.isActivated === true || fullKeyData.isActivated === 'true',
       activationDays: parseInt(fullKeyData.activationDays || 0),
       activatedAt: fullKeyData.activatedAt || null,
+      isExpired:
+        fullKeyData.isExpired === true ||
+        (fullKeyData.isActivated === true || fullKeyData.isActivated === 'true') &&
+          !!fullKeyData.expiresAt &&
+          new Date() > new Date(fullKeyData.expiresAt),
       permissions: fullKeyData.permissions,
 
       // 使用统计（使用验证结果中的完整数据）
@@ -513,6 +514,7 @@ router.post('/api/user-stats', async (req, res) => {
         rateLimitCost: parseFloat(fullKeyData.rateLimitCost) || 0, // 新增：费用限制
         dailyCostLimit: fullKeyData.dailyCostLimit || 0,
         totalCostLimit: fullKeyData.totalCostLimit || 0,
+        dailyResetCredits: parseInt(fullKeyData.dailyResetCredits || 0),
         weeklyOpusCostLimit: parseFloat(fullKeyData.weeklyOpusCostLimit) || 0, // Opus 周费用限制
         weeklyResetDay: parseInt(fullKeyData.weeklyResetDay) || 1, // 周费用重置日 (1-7)
         weeklyResetHour: parseInt(fullKeyData.weeklyResetHour) || 0, // 周费用重置时 (0-23)
@@ -1364,7 +1366,7 @@ router.post('/api/user-model-stats', async (req, res) => {
     } else if (apiKey) {
       // 通过 apiKey 查询（保持向后兼容）
       // 验证API Key
-      const validation = await apiKeyService.validateApiKey(apiKey)
+      const validation = await apiKeyService.validateApiKeyForStats(apiKey)
 
       if (!validation.valid) {
         const clientIP = req.ip || req.connection?.remoteAddress || 'unknown'
@@ -1613,6 +1615,60 @@ router.post('/api/redeem-card', async (req, res) => {
       .catch(() => {})
 
     logger.error('❌ Failed to redeem card:', error)
+    res.status(400).json({
+      success: false,
+      error: error.message
+    })
+  }
+})
+
+// 🔄 公开的当日额度重置接口（通过 apiId 验证身份）
+router.post('/api/reset-daily-usage', async (req, res) => {
+  try {
+    const { apiId } = req.body
+
+    if (!apiId) {
+      return res.status(400).json({
+        success: false,
+        error: '缺少 API ID'
+      })
+    }
+
+    if (
+      typeof apiId !== 'string' ||
+      !apiId.match(/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i)
+    ) {
+      return res.status(400).json({
+        success: false,
+        error: 'API ID 格式无效'
+      })
+    }
+
+    const keyData = await redis.getApiKey(apiId)
+    if (!keyData || Object.keys(keyData).length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: 'API Key 不存在'
+      })
+    }
+
+    if (keyData.isActive !== 'true') {
+      return res.status(403).json({
+        success: false,
+        error: 'API Key 已禁用'
+      })
+    }
+
+    const result = await apiKeyService.consumeDailyResetCreditAndResetDailyUsage(apiId)
+
+    logger.api(`🔄 Daily usage reset via API Stats: ${apiId}`)
+
+    res.json({
+      success: true,
+      data: result
+    })
+  } catch (error) {
+    logger.error('❌ Failed to reset daily usage via API Stats:', error)
     res.status(400).json({
       success: false,
       error: error.message

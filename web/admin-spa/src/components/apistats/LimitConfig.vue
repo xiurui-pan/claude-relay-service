@@ -239,6 +239,12 @@
         <!-- 其他限制信息 -->
         <div class="space-y-4 border-t border-gray-100 pt-3 dark:border-gray-700">
           <div class="flex items-center justify-between">
+            <span class="text-sm text-gray-600 dark:text-gray-400 md:text-base">可用重置次数</span>
+            <span class="text-sm font-medium text-gray-900 md:text-base">
+              {{ statsData.limits.dailyResetCredits || 0 }}
+            </span>
+          </div>
+          <div class="flex items-center justify-between">
             <span class="text-sm text-gray-600 dark:text-gray-400 md:text-base">并发限制</span>
             <span class="text-sm font-medium text-gray-900 md:text-base">
               <span v-if="statsData.limits.concurrencyLimit > 0">

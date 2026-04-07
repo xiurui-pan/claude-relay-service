@@ -493,6 +493,104 @@ const sanitizeErrorForClient = (errorData) => {
   }
 }
 
+const RETRYABLE_NETWORK_ERROR_CODES = new Set([
+  'ECONNRESET',
+  'ECONNREFUSED',
+  'ECONNABORTED',
+  'ETIMEDOUT',
+  'ESOCKETTIMEDOUT',
+  'EPIPE',
+  'UND_ERR_CONNECT_TIMEOUT'
+])
+
+const RETRYABLE_NETWORK_ERROR_PATTERNS = [
+  /socket hang up/i,
+  /network connection failed/i,
+  /client network socket disconnected/i,
+  /secure tls connection was established/i,
+  /connection reset by peer/i,
+  /fetch failed/i
+]
+
+const getRetryableNetworkStatus = (error) => {
+  const code = (error?.code || error?.cause?.code || '').toString().toUpperCase()
+  if (code === 'ETIMEDOUT' || code === 'ESOCKETTIMEDOUT' || code === 'UND_ERR_CONNECT_TIMEOUT') {
+    return 504
+  }
+  return 502
+}
+
+const isRetryableNetworkError = (error) => {
+  if (!error) {
+    return false
+  }
+
+  const code = (error.code || error.cause?.code || '').toString().toUpperCase()
+  if (RETRYABLE_NETWORK_ERROR_CODES.has(code)) {
+    return true
+  }
+
+  const messageCandidates = [
+    error.message,
+    error.cause?.message,
+    error.response?.data?.error?.message,
+    error.response?.data?.message
+  ].filter((message) => typeof message === 'string' && message.trim())
+
+  return messageCandidates.some((message) =>
+    RETRYABLE_NETWORK_ERROR_PATTERNS.some((pattern) => pattern.test(message))
+  )
+}
+
+const buildFriendlyNetworkError = (statusCode = 502) => ({
+  error: {
+    message: '上游网络连接失败，请稍后重试',
+    type: 'upstream_network_error',
+    code: 'upstream_network_error',
+    status: statusCode
+  }
+})
+
+const buildFriendlyRateLimitError = (resetsInSeconds = null) => {
+  const error = {
+    message: '触发上游限流，请稍后重试',
+    type: 'rate_limit_error',
+    code: 'rate_limit_exceeded',
+    status: 429
+  }
+
+  if (Number.isFinite(Number(resetsInSeconds)) && Number(resetsInSeconds) > 0) {
+    error.resets_in_seconds = Number(resetsInSeconds)
+  }
+
+  return { error }
+}
+
+const buildFriendlyUpstreamError = (statusCode, fallbackMessage = '') => {
+  const trimmedMessage =
+    typeof fallbackMessage === 'string' && fallbackMessage.trim() ? fallbackMessage.trim() : ''
+
+  if (statusCode === 502 || statusCode === 503 || statusCode === 504) {
+    return {
+      error: {
+        message: '上游服务暂时不可用，请稍后重试',
+        type: 'upstream_service_unavailable',
+        code: 'upstream_service_unavailable',
+        status: statusCode
+      }
+    }
+  }
+
+  return {
+    error: {
+      message: trimmedMessage || '上游服务请求失败',
+      type: 'upstream_request_failed',
+      code: 'upstream_request_failed',
+      status: statusCode || 500
+    }
+  }
+}
+
 module.exports = {
   markTempUnavailable,
   isTempUnavailable,
@@ -501,6 +599,11 @@ module.exports = {
   classifyError,
   parseRetryAfter,
   sanitizeErrorForClient,
+  isRetryableNetworkError,
+  getRetryableNetworkStatus,
+  buildFriendlyNetworkError,
+  buildFriendlyRateLimitError,
+  buildFriendlyUpstreamError,
   recordErrorHistory,
   getErrorHistory,
   clearErrorHistory,

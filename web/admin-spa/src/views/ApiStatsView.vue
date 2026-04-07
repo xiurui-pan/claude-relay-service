@@ -100,6 +100,15 @@
         </div>
       </div>
 
+      <div v-else-if="expiredNotice" class="mb-4 sm:mb-6 md:mb-8">
+        <div
+          class="rounded-xl border border-amber-500/30 bg-amber-500/15 p-3 text-sm text-amber-900 backdrop-blur-sm dark:border-amber-500/20 dark:bg-amber-500/10 dark:text-amber-200 md:p-4 md:text-base"
+        >
+          <i class="fas fa-exclamation-circle mr-2" />
+          {{ expiredNotice }}
+        </div>
+      </div>
+
       <!-- 统计数据展示区域 -->
       <div v-if="statsData" class="fade-in">
         <div class="glass-strong rounded-2xl p-3 shadow-xl sm:rounded-3xl sm:p-4 md:p-6">
@@ -201,6 +210,95 @@
           <!-- 基本信息和统计概览 -->
           <StatsOverview />
 
+          <div
+            v-if="showCodexConfigCard"
+            class="mb-4 mt-4 overflow-hidden rounded-2xl border border-cyan-200/70 bg-gradient-to-br from-cyan-50/95 via-white/95 to-blue-50/95 shadow-lg dark:border-cyan-700/40 dark:from-cyan-950/40 dark:via-gray-900/80 dark:to-blue-950/40 sm:mb-6 sm:mt-6 md:mb-8 md:mt-8"
+          >
+            <div
+              class="border-b border-cyan-200/70 px-4 py-4 dark:border-cyan-800/40 sm:px-5 md:px-6"
+            >
+              <div
+                class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between sm:gap-4"
+              >
+                <div class="flex items-start gap-3">
+                  <div
+                    class="mt-0.5 flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-cyan-500 to-blue-600 text-white shadow-lg"
+                  >
+                    <i class="fas fa-terminal" />
+                  </div>
+                  <div>
+                    <h3 class="text-lg font-bold text-gray-900 dark:text-gray-100">Codex 配置</h3>
+                    <p class="mt-1 text-sm leading-relaxed text-gray-600 dark:text-gray-400">
+                      已按当前查询的 API Key 生成 Codex CLI 可直接使用的配置内容。
+                    </p>
+                  </div>
+                </div>
+                <div
+                  class="inline-flex items-center rounded-full bg-cyan-100 px-3 py-1 text-xs font-semibold text-cyan-700 dark:bg-cyan-900/40 dark:text-cyan-300"
+                >
+                  <i class="fas fa-key mr-1.5" />
+                  当前 Key 已注入 auth.json
+                </div>
+              </div>
+            </div>
+
+            <div class="space-y-5 px-4 py-4 sm:px-5 md:px-6">
+              <div
+                class="rounded-2xl border border-gray-200/80 bg-white/80 p-4 dark:border-gray-700 dark:bg-gray-900/70"
+              >
+                <div
+                  class="mb-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"
+                >
+                  <div>
+                    <div class="text-sm font-semibold text-gray-900 dark:text-gray-100">
+                      1. 配置文件 config.toml
+                    </div>
+                    <div class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                      在 <code class="font-mono">~/.codex/config.toml</code> 文件开头添加以下配置：
+                    </div>
+                  </div>
+                  <button
+                    class="inline-flex items-center justify-center gap-2 rounded-lg border border-cyan-200 bg-cyan-50 px-3 py-2 text-sm font-medium text-cyan-700 transition-colors hover:bg-cyan-100 dark:border-cyan-700 dark:bg-cyan-900/30 dark:text-cyan-300 dark:hover:bg-cyan-900/50"
+                    @click="copyCodexConfigToml"
+                  >
+                    <i class="fas fa-copy" />
+                    复制 config.toml
+                  </button>
+                </div>
+                <pre
+                  class="custom-scrollbar overflow-x-auto rounded-xl bg-gray-950 p-4 text-xs leading-6 text-gray-100 sm:text-sm"
+                ><code>{{ codexConfigToml }}</code></pre>
+              </div>
+
+              <div
+                class="rounded-2xl border border-gray-200/80 bg-white/80 p-4 dark:border-gray-700 dark:bg-gray-900/70"
+              >
+                <div
+                  class="mb-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"
+                >
+                  <div>
+                    <div class="text-sm font-semibold text-gray-900 dark:text-gray-100">
+                      2. 认证文件 auth.json
+                    </div>
+                    <div class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                      在 <code class="font-mono">~/.codex/auth.json</code> 文件中配置：
+                    </div>
+                  </div>
+                  <button
+                    class="inline-flex items-center justify-center gap-2 rounded-lg border border-cyan-200 bg-cyan-50 px-3 py-2 text-sm font-medium text-cyan-700 transition-colors hover:bg-cyan-100 dark:border-cyan-700 dark:bg-cyan-900/30 dark:text-cyan-300 dark:hover:bg-cyan-900/50"
+                    @click="copyCodexAuthJson"
+                  >
+                    <i class="fas fa-copy" />
+                    复制 auth.json
+                  </button>
+                </div>
+                <pre
+                  class="custom-scrollbar overflow-x-auto rounded-xl bg-gray-950 p-4 text-xs leading-6 text-gray-100 sm:text-sm"
+                ><code>{{ codexAuthJson }}</code></pre>
+              </div>
+            </div>
+          </div>
+
           <!-- Token 分布和限制配置 -->
           <div
             class="mb-4 mt-4 grid grid-cols-1 gap-3 sm:mb-6 sm:mt-6 sm:gap-4 md:mb-8 md:mt-8 md:gap-6 xl:grid-cols-2 xl:items-stretch"
@@ -251,7 +349,7 @@
             @click="quotaSubTab = 'redeem'"
           >
             <i class="fas fa-ticket-alt mr-2" />
-            兑换额度卡
+            兑换卡片
           </button>
           <button
             :class="[
@@ -267,7 +365,7 @@
           </button>
         </div>
 
-        <!-- 兑换额度卡子内容 -->
+        <!-- 兑换卡片子内容 -->
         <div v-if="quotaSubTab === 'redeem'">
           <!-- 需要先输入 API Key -->
           <div v-if="!apiId" class="py-8 text-center">
@@ -292,15 +390,40 @@
               </p>
             </div>
 
+            <div
+              class="mb-6 rounded-xl border border-amber-200 bg-amber-50 p-4 dark:border-amber-800 dark:bg-amber-900/20"
+            >
+              <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <p class="text-sm font-medium text-amber-800 dark:text-amber-200">可用重置次数</p>
+                  <p class="mt-1 text-2xl font-bold text-amber-900 dark:text-amber-100">
+                    {{ statsData?.limits?.dailyResetCredits || 0 }}
+                  </p>
+                  <p class="mt-1 text-xs text-amber-700 dark:text-amber-300">
+                    仅对有每日额度限制的 API Key 生效，每次消耗 1 次。
+                  </p>
+                </div>
+                <button
+                  class="rounded-xl bg-gradient-to-r from-amber-500 to-orange-500 px-5 py-3 font-medium text-white transition-all hover:from-amber-600 hover:to-orange-600 disabled:cursor-not-allowed disabled:opacity-50"
+                  :disabled="!canResetDailyUsage || resetDailyUsageLoading"
+                  @click="handleResetDailyUsage"
+                >
+                  <i v-if="resetDailyUsageLoading" class="fas fa-spinner fa-spin mr-2" />
+                  <i v-else class="fas fa-rotate-left mr-2" />
+                  {{ resetDailyUsageLoading ? '重置中...' : '重置当日额度' }}
+                </button>
+              </div>
+            </div>
+
             <div class="space-y-4">
               <div>
                 <label class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">
-                  额度卡卡号
+                  卡片卡号
                 </label>
                 <input
                   v-model="redeemCode"
                   class="w-full rounded-xl border border-gray-300 bg-white px-4 py-3 text-gray-900 placeholder-gray-400 transition-all focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100 dark:placeholder-gray-500"
-                  placeholder="请输入额度卡卡号"
+                  placeholder="请输入卡片卡号"
                   type="text"
                   @keyup.enter="handleRedeem"
                 />
@@ -369,6 +492,12 @@
                           }}</span
                         >
                       </p>
+                      <p v-if="redeemResult.data.resetCreditsAdded">
+                        重置次数增加:
+                        <span class="font-medium"
+                          >{{ redeemResult.data.resetCreditsAdded }} 次</span
+                        >
+                      </p>
                     </div>
                   </div>
                 </div>
@@ -417,20 +546,10 @@
                       <span
                         :class="[
                           'inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium',
-                          record.cardType === 'quota'
-                            ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300'
-                            : record.cardType === 'time'
-                              ? 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-300'
-                              : 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300'
+                          getCardTypeBadgeClass(record.cardType)
                         ]"
                       >
-                        {{
-                          record.cardType === 'quota'
-                            ? '额度卡'
-                            : record.cardType === 'time'
-                              ? '时间卡'
-                              : '组合卡'
-                        }}
+                        {{ getCardTypeLabel(record.cardType) }}
                       </span>
                       <span
                         v-if="record.status === 'revoked'"
@@ -440,18 +559,7 @@
                       </span>
                     </div>
                     <p class="text-sm text-gray-600 dark:text-gray-300">
-                      <span v-if="record.quotaAdded">额度 +${{ record.quotaAdded }}</span>
-                      <span v-if="record.quotaAdded && record.timeAdded"> · </span>
-                      <span v-if="record.timeAdded"
-                        >有效期 +{{ record.timeAmount
-                        }}{{
-                          record.timeUnit === 'days'
-                            ? '天'
-                            : record.timeUnit === 'hours'
-                              ? '小时'
-                              : '月'
-                        }}</span
-                      >
+                      {{ formatRedemptionRecord(record) }}
                     </p>
                   </div>
                   <div
@@ -531,8 +639,12 @@ import { useRoute } from 'vue-router'
 import { storeToRefs } from 'pinia'
 import { useApiStatsStore } from '@/stores/apistats'
 import { useThemeStore } from '@/stores/theme'
-import { redeemCardByApiIdApi, getRedemptionHistoryByApiIdApi } from '@/utils/http_apis'
-import { formatDateTime, showToast } from '@/utils/tools'
+import {
+  redeemCardByApiIdApi,
+  getRedemptionHistoryByApiIdApi,
+  resetDailyUsageByApiIdApi
+} from '@/utils/http_apis'
+import { copyText, formatDateTime, showToast } from '@/utils/tools'
 import LogoTitle from '@/components/common/LogoTitle.vue'
 import ThemeToggle from '@/components/common/ThemeToggle.vue'
 import ApiKeyInput from '@/components/apistats/ApiKeyInput.vue'
@@ -586,16 +698,111 @@ const testServiceType = ref('claude')
 const showNotice = ref(false)
 const dontShowAgain = ref(false)
 const NOTICE_STORAGE_KEY = 'apiStatsNoticeRead'
+const CODEX_BASE_URL = 'http://liliray.xyz:13000/openai'
 
 // 额度卡兑换相关状态
 const quotaSubTab = ref('redeem')
 const redeemCode = ref('')
 const redeemLoading = ref(false)
+const resetDailyUsageLoading = ref(false)
 const redeemResult = ref(null)
 const redemptionHistory = ref([])
 const historyLoading = ref(false)
 
-// 兑换额度卡
+const showCodexConfigCard = computed(() => {
+  return !multiKeyMode.value && !!statsData.value && apiKey.value.trim().length > 0
+})
+
+const expiredNotice = computed(() => {
+  if (!statsData.value?.isExpired) return ''
+  return '该 API Key 已过期，但仍可查看额度、使用统计和兑换卡片。'
+})
+
+const codexConfigToml = computed(() => {
+  return `model_provider = "crs"
+model = "gpt-5.4"
+ model_reasoning_effort = "medium"
+disable_response_storage = true
+preferred_auth_method = "apikey"
+
+[model_providers.crs]
+name = "OpenAI"
+base_url = "${CODEX_BASE_URL}"
+wire_api = "responses"
+requires_openai_auth = true`
+})
+
+const codexAuthJson = computed(() => {
+  return JSON.stringify(
+    {
+      OPENAI_API_KEY: apiKey.value.trim()
+    },
+    null,
+    2
+  )
+})
+
+const copyCodexConfigToml = () => {
+  copyText(codexConfigToml.value, 'config.toml 已复制')
+}
+
+const copyCodexAuthJson = () => {
+  copyText(codexAuthJson.value, 'auth.json 已复制')
+}
+
+const canResetDailyUsage = computed(() => {
+  const limits = statsData.value?.limits
+  if (!apiId.value || !limits) return false
+  return (limits.dailyCostLimit || 0) > 0 && (limits.dailyResetCredits || 0) > 0
+})
+
+const getCardTypeLabel = (type) => {
+  if (type === 'quota') return '额度卡'
+  if (type === 'time') return '时间卡'
+  if (type === 'reset') return '重置卡'
+  return '组合卡'
+}
+
+const getCardTypeBadgeClass = (type) => {
+  if (type === 'quota') return 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300'
+  if (type === 'time')
+    return 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-300'
+  if (type === 'reset')
+    return 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300'
+  return 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300'
+}
+
+const formatRedemptionRecord = (record) => {
+  const parts = []
+  if (record.quotaAdded) {
+    parts.push(`额度 +$${record.quotaAdded}`)
+  }
+  if (record.timeAdded) {
+    const unit = record.timeUnit === 'days' ? '天' : record.timeUnit === 'hours' ? '小时' : '月'
+    parts.push(`有效期 +${record.timeAdded}${unit}`)
+  }
+  if (record.resetCreditsAdded) {
+    parts.push(`重置次数 +${record.resetCreditsAdded}`)
+  }
+  return parts.join(' · ')
+}
+
+const handleResetDailyUsage = async () => {
+  if (!canResetDailyUsage.value || !apiId.value) return
+
+  resetDailyUsageLoading.value = true
+  const res = await resetDailyUsageByApiIdApi(apiId.value)
+  resetDailyUsageLoading.value = false
+
+  if (res.success) {
+    showToast(`当日额度已重置，剩余 ${res.data?.remainingDailyResetCredits || 0} 次`, 'success')
+    await loadStatsWithApiId()
+  } else {
+    showToast(res.error || res.message || '重置失败', 'error')
+  }
+}
+
+// 兑换卡片
 const handleRedeem = async () => {
   if (!redeemCode.value.trim() || !apiId.value) return
 
@@ -614,7 +821,7 @@ const handleRedeem = async () => {
     const hasWarnings = warnings.length > 0
     redeemResult.value = {
       success: true,
-      message: hasWarnings ? warnings.join('；') : '额度卡兑换成功！',
+      message: hasWarnings ? warnings.join('；') : '卡片兑换成功！',
       data: res.data,
       hasWarnings
     }
@@ -643,7 +850,7 @@ const loadRedemptionHistory = async () => {
   historyLoading.value = false
 
   if (res.success) {
-    redemptionHistory.value = res.data?.records || res.data || []
+    redemptionHistory.value = res.data?.redemptions || res.data?.records || res.data || []
   }
 }
 

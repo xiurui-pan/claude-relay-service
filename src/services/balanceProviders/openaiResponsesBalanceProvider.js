@@ -13,9 +13,29 @@ class OpenAIResponsesBalanceProvider extends BaseBalanceProvider {
   async queryBalance(account) {
     this.logger.debug(`查询 OpenAI Responses 余额: ${account?.id}`)
 
-    // 配置了额度时直接返回（字段法）
+    // 配置了每日额度时直接返回（字段法）
     if (account?.dailyQuota && Number(account.dailyQuota) > 0) {
       return this.readQuotaFromFields(account)
+    }
+
+    // 仅配置总额度时，按总额度展示剩余额度
+    if (account?.totalQuota && Number(account.totalQuota) > 0) {
+      const totalQuota = Number(account.totalQuota)
+      const totalUsage = Number(account.totalUsage || 0)
+      const remaining = Math.max(0, totalQuota - totalUsage)
+      const percentage = totalQuota > 0 ? (totalUsage / totalQuota) * 100 : 0
+
+      return {
+        balance: remaining,
+        currency: 'USD',
+        quota: {
+          total: totalQuota,
+          used: totalUsage,
+          remaining,
+          percentage: Math.round(percentage * 100) / 100
+        },
+        queryMethod: 'field'
+      }
     }
 
     // 尝试调用 usage 接口（兼容性不保证）

@@ -4,6 +4,8 @@ import { ref, computed } from 'vue'
 import * as httpApis from '@/utils/http_apis'
 
 export const useApiStatsStore = defineStore('apistats', () => {
+  const EXPIRED_KEY_NOTICE = '该 API Key 已过期，但仍可查看额度、使用统计和兑换额度卡。'
+
   // 状态
   const apiKey = ref('')
   const apiId = ref(null)
@@ -100,6 +102,19 @@ export const useApiStatsStore = defineStore('apistats', () => {
 
   // Actions
 
+  function isExpiredMessage(message) {
+    if (!message) return false
+    return /已过期|expired/i.test(String(message))
+  }
+
+  function buildQueryErrorMessage(err, fallbackMessage) {
+    const rawMessage = err?.message || ''
+    if (isExpiredMessage(rawMessage)) {
+      return EXPIRED_KEY_NOTICE
+    }
+    return rawMessage || fallbackMessage
+  }
+
   // 查询统计数据
   async function queryStats() {
     // 多 Key 模式处理
@@ -161,7 +176,7 @@ export const useApiStatsStore = defineStore('apistats', () => {
       }
     } catch (err) {
       console.error('Query stats error:', err)
-      error.value = err.message || '查询统计数据失败，请检查您的 API Key 是否正确'
+      error.value = buildQueryErrorMessage(err, '查询统计数据失败，请检查您的 API Key 是否正确')
       statsData.value = null
       modelStats.value = []
       apiId.value = null
@@ -341,7 +356,7 @@ export const useApiStatsStore = defineStore('apistats', () => {
       }
     } catch (err) {
       console.error('Load stats with apiId error:', err)
-      error.value = err.message || '查询统计数据失败'
+      error.value = buildQueryErrorMessage(err, '查询统计数据失败')
       statsData.value = null
       modelStats.value = []
     } finally {
@@ -361,7 +376,7 @@ export const useApiStatsStore = defineStore('apistats', () => {
       console.error('Error loading OEM settings:', err)
       // 失败时使用默认值
       oemSettings.value = {
-        siteName: 'Claude Relay Service',
+        siteName: 'Codex Relay Service',
         siteIcon: '',
         siteIconData: ''
       }

@@ -151,11 +151,31 @@ class AccountBalanceService {
         accounts,
         this.DEFAULT_CONCURRENCY,
         async (acc) => {
-          const balance = await this._getAccountBalanceForAccount(acc, platform, {
-            queryApi: false,
-            useCache: true
-          })
-          return { ...balance, name: acc.name || '' }
+          try {
+            const balance = await this._getAccountBalanceForAccount(acc, platform, {
+              queryApi: false,
+              useCache: true
+            })
+            return { ...balance, name: acc.name || '' }
+          } catch (error) {
+            this.logger.error(`余额汇总单账户失败: ${platform}:${acc?.id}`, error)
+            return {
+              success: true,
+              data: {
+                accountId: acc?.id,
+                platform,
+                balance: null,
+                quota: null,
+                statistics: {},
+                source: 'local',
+                lastRefreshAt: new Date().toISOString(),
+                cacheExpiresAt: null,
+                status: 'error',
+                error: error.message || '查询失败'
+              },
+              name: acc?.name || ''
+            }
+          }
         }
       )
 

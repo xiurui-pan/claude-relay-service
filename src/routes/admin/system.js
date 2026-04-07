@@ -263,7 +263,7 @@ router.get('/oem-settings', async (req, res) => {
 
     // 默认设置
     const defaultSettings = {
-      siteName: 'Claude Relay Service',
+      siteName: 'Codex Relay Service',
       siteIcon: '',
       siteIconData: '', // Base64编码的图标数据
       showAdminButton: true, // 是否显示管理后台按钮
@@ -426,6 +426,44 @@ router.get('/models/pricing', authenticateAdmin, async (req, res) => {
   } catch (error) {
     logger.error('Failed to get model pricing:', error)
     res.status(500).json({ error: 'Failed to get model pricing', message: error.message })
+  }
+})
+
+// 保存模型价格数据
+router.put('/models/pricing', authenticateAdmin, async (req, res) => {
+  try {
+    const payload = req.body
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+      return res.status(400).json({ success: false, message: '价格数据格式不正确' })
+    }
+
+    const pricingFile = pricingService.pricingFile
+    if (!pricingFile) {
+      return res.status(500).json({ success: false, message: '价格文件路径不可用' })
+    }
+
+    const normalizedData = {}
+    for (const [modelName, config] of Object.entries(payload)) {
+      if (!config || typeof config !== 'object' || Array.isArray(config)) {
+        return res
+          .status(400)
+          .json({ success: false, message: `模型 ${modelName} 的价格配置格式不正确` })
+      }
+
+      normalizedData[modelName] = { ...config }
+    }
+
+    fs.writeFileSync(pricingFile, `${JSON.stringify(normalizedData, null, 2)}\n`, 'utf8')
+    const reloadResult = await pricingService.reloadPricingData()
+
+    return res.json({
+      success: reloadResult.success,
+      message: reloadResult.success ? '模型价格已保存' : '模型价格已写入文件，但内存刷新失败',
+      data: reloadResult.success ? pricingService.pricingData : normalizedData
+    })
+  } catch (error) {
+    logger.error('Failed to save model pricing:', error)
+    return res.status(500).json({ success: false, message: '保存模型价格失败', error: error.message })
   }
 })
 

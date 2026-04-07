@@ -49,6 +49,7 @@ class OpenAIResponsesAccountService {
       accountType = 'shared', // 'dedicated' or 'shared'
       schedulable = true, // 是否可被调度
       dailyQuota = 0, // 每日额度限制（美元），0表示不限制
+      totalQuota = 0, // 总额度限制（美元），0表示不限制
       quotaResetTime = '00:00', // 额度重置时间（HH:mm格式）
       rateLimitDuration = 60, // 限流时间（分钟）
       disableAutoProtection = false, // 是否关闭自动防护（429/401/400/529 不自动禁用）
@@ -101,7 +102,9 @@ class OpenAIResponsesAccountService {
       rateLimitDuration: rateLimitDuration.toString(),
       // 额度管理
       dailyQuota: dailyQuota.toString(),
+      totalQuota: totalQuota.toString(),
       dailyUsage: '0',
+      totalUsage: '0',
       lastResetDate: redis.getDateStringInTimezone(),
       quotaResetTime,
       quotaStoppedAt: '',
@@ -188,6 +191,22 @@ class OpenAIResponsesAccountService {
     // 自动防护开关
     if (updates.disableAutoProtection !== undefined) {
       updates.disableAutoProtection = updates.disableAutoProtection.toString()
+    }
+
+    if (updates.dailyQuota !== undefined) {
+      updates.dailyQuota = updates.dailyQuota.toString()
+    }
+
+    if (updates.totalQuota !== undefined) {
+      updates.totalQuota = updates.totalQuota.toString()
+    }
+
+    if (updates.dailyUsage !== undefined) {
+      updates.dailyUsage = updates.dailyUsage.toString()
+    }
+
+    if (updates.totalUsage !== undefined) {
+      updates.totalUsage = updates.totalUsage.toString()
     }
 
     // 更新 Redis
@@ -292,7 +311,7 @@ class OpenAIResponsesAccountService {
   async markAccountRateLimited(accountId, duration = null) {
     const account = await this.getAccount(accountId)
     if (!account) {
-      return
+      return false
     }
 
     // disableAutoProtection 检查
@@ -303,7 +322,7 @@ class OpenAIResponsesAccountService {
       upstreamErrorHelper
         .recordErrorHistory(accountId, 'openai-responses', 429, 'rate_limit')
         .catch(() => {})
-      return
+      return false
     }
 
     const rateLimitDuration = duration || parseInt(account.rateLimitDuration) || 60
@@ -323,6 +342,8 @@ class OpenAIResponsesAccountService {
     logger.warn(
       `⏳ Account ${account.name} marked as rate limited for ${rateLimitDuration} minutes (until ${resetAt.toISOString()})`
     )
+
+    return true
   }
 
   // 🚫 标记账户为未授权状态（401错误）
@@ -448,33 +469,41 @@ class OpenAIResponsesAccountService {
 
     // 检查是否需要重置额度
     const today = redis.getDateStringInTimezone()
-    if (account.lastResetDate !== today) {
-      // 重置额度
-      await this.updateAccount(accountId, {
-        dailyUsage: amount.toString(),
-        lastResetDate: today,
-        quotaStoppedAt: ''
-      })
-    } else {
-      // 累加使用额度
-      const currentUsage = parseFloat(account.dailyUsage) || 0
-      const newUsage = currentUsage + amount
-      const dailyQuota = parseFloat(account.dailyQuota) || 0
+    const currentDailyUsage =
+      account.lastResetDate !== today ? 0 : parseFloat(account.dailyUsage) || 0
+    const newDailyUsage = currentDailyUsage + amount
+    const currentTotalUsage = parseFloat(account.totalUsage) || 0
+    const newTotalUsage = currentTotalUsage + amount
+    const dailyQuota = parseFloat(account.dailyQuota) || 0
+    const totalQuota = parseFloat(account.totalQuota) || 0
 
-      const updates = {
-        dailyUsage: newUsage.toString()
-      }
-
-      // 检查是否超出额度
-      if (dailyQuota > 0 && newUsage >= dailyQuota) {
-        updates.status = 'quotaExceeded'
-        updates.quotaStoppedAt = new Date().toISOString()
-        updates.errorMessage = `Daily quota exceeded: $${newUsage.toFixed(2)} / $${dailyQuota.toFixed(2)}`
-        logger.warn(`💸 Account ${account.name} exceeded daily quota`)
-      }
-
-      await this.updateAccount(accountId, updates)
+    const updates = {
+      dailyUsage: newDailyUsage.toString(),
+      totalUsage: newTotalUsage.toString()
     }
+
+    if (account.lastResetDate !== today) {
+      updates.lastResetDate = today
+      updates.quotaStoppedAt = ''
+    }
+
+    if (totalQuota > 0 && newTotalUsage >= totalQuota) {
+      updates.status = 'quotaExceeded'
+      updates.quotaStoppedAt = new Date().toISOString()
+      updates.errorMessage = `Total quota exceeded: $${newTotalUsage.toFixed(2)} / $${totalQuota.toFixed(2)}`
+      logger.warn(`💸 Account ${account.name} exceeded total quota`)
+    } else if (dailyQuota > 0 && newDailyUsage >= dailyQuota) {
+      updates.status = 'quotaExceeded'
+      updates.quotaStoppedAt = new Date().toISOString()
+      updates.errorMessage = `Daily quota exceeded: $${newDailyUsage.toFixed(2)} / $${dailyQuota.toFixed(2)}`
+      logger.warn(`💸 Account ${account.name} exceeded daily quota`)
+    } else if (account.status === 'quotaExceeded') {
+      updates.status = 'active'
+      updates.quotaStoppedAt = ''
+      updates.errorMessage = ''
+    }
+
+    await this.updateAccount(accountId, updates)
   }
 
   // 更新账户使用统计（记录 token 使用量）

@@ -49,6 +49,111 @@ function isDisposableFreeAccount(account) {
   return /^free-\d+$/.test(name)
 }
 
+const pendingDisposableFreeCleanup = new Set()
+
+function getDisposableFreeMaxSuccessRequests() {
+  return Number(config?.openaiScheduling?.disposableFreeMaxSuccessRequests) || 0
+}
+
+function getDisposableFreeSuccessCount(account) {
+  const count = parseInt(account?.disposableSuccessCount || '0', 10)
+  return Number.isFinite(count) ? count : 0
+}
+
+function shouldRotateDisposableFreeAccount(account) {
+  const threshold = getDisposableFreeMaxSuccessRequests()
+  if (threshold <= 0 || !isDisposableFreeAccount(account)) {
+    return false
+  }
+  if (account?.id && pendingDisposableFreeCleanup.has(account.id)) {
+    return true
+  }
+  return getDisposableFreeSuccessCount(account) >= threshold
+}
+
+function scheduleDisposableFreeCleanup(account, accountId, reason) {
+  if (pendingDisposableFreeCleanup.has(accountId)) {
+    return
+  }
+
+  pendingDisposableFreeCleanup.add(accountId)
+  setImmediate(async () => {
+    try {
+      await accountGroupService.removeAccountFromAllGroups(accountId, 'openai')
+      await deleteAccount(accountId)
+      logger.warn(`🗑️ Auto-deleted disposable free OpenAI account ${account.name} (${reason})`)
+    } catch (deleteError) {
+      logger.error(
+        `❌ Failed to auto-delete disposable free OpenAI account ${account.name} (${reason}):`,
+        deleteError
+      )
+    } finally {
+      pendingDisposableFreeCleanup.delete(accountId)
+    }
+  })
+}
+
+async function quarantineDisposableFreeAccount(account, accountId, reason, statusCode) {
+  const now = new Date().toISOString()
+  const currentCount = parseInt(account.unauthorizedCount || '0', 10)
+  const unauthorizedCount = Number.isFinite(currentCount) ? currentCount + 1 : 1
+  const client = redisClient.getClientSafe()
+
+  const pipeline = client.pipeline()
+  pipeline.hset(`${OPENAI_ACCOUNT_KEY_PREFIX}${accountId}`, {
+    status: 'unauthorized',
+    schedulable: 'false',
+    errorMessage: reason,
+    unauthorizedAt: now,
+    unauthorizedCount: unauthorizedCount.toString(),
+    updatedAt: now
+  })
+  pipeline.srem(SHARED_OPENAI_ACCOUNTS_KEY, accountId)
+  await pipeline.exec()
+
+  logger.warn(
+    `🚫 Quarantined disposable free OpenAI account ${account.name} after ${statusCode} error`
+  )
+
+  scheduleDisposableFreeCleanup(account, accountId, `after ${statusCode} error`)
+}
+
+async function retireDisposableFreeAccountAfterSuccess(accountId) {
+  const threshold = getDisposableFreeMaxSuccessRequests()
+  if (threshold <= 0) {
+    return { tracked: false, retired: false, successCount: 0 }
+  }
+
+  const account = await getAccount(accountId)
+  if (!account || !isDisposableFreeAccount(account)) {
+    return { tracked: false, retired: false, successCount: 0 }
+  }
+
+  const nextSuccessCount = getDisposableFreeSuccessCount(account) + 1
+  const now = new Date().toISOString()
+
+  await updateAccount(accountId, {
+    disposableSuccessCount: nextSuccessCount.toString(),
+    lastSuccessfulRequestAt: now
+  })
+
+  if (nextSuccessCount < threshold) {
+    return { tracked: true, retired: false, successCount: nextSuccessCount }
+  }
+
+  logger.info(
+    `♻️ Retiring disposable free OpenAI account ${account.name} after ${nextSuccessCount} successful request(s)`
+  )
+
+  scheduleDisposableFreeCleanup(
+    account,
+    accountId,
+    `after ${nextSuccessCount} successful request(s)`
+  )
+
+  return { tracked: true, retired: true, successCount: nextSuccessCount }
+}
+
 function computeResetMeta(updatedAt, resetAfterSeconds) {
   if (!updatedAt || resetAfterSeconds === null || resetAfterSeconds === undefined) {
     return {
@@ -117,6 +222,103 @@ function buildCodexUsageSnapshot(accountData) {
     },
     primaryOverSecondaryPercent: overSecondaryPercent
   }
+}
+
+function buildRateLimitInfoFromAccountData(accountData = {}) {
+  const status = accountData.rateLimitStatus || 'normal'
+  const rateLimitedAt = accountData.rateLimitedAt || null
+  const rateLimitResetAt = accountData.rateLimitResetAt || null
+
+  if (status === 'limited') {
+    const now = Date.now()
+    let remainingTime = 0
+
+    if (rateLimitResetAt) {
+      const resetAt = new Date(rateLimitResetAt).getTime()
+      if (!Number.isNaN(resetAt)) {
+        remainingTime = Math.max(0, resetAt - now)
+      }
+    } else if (rateLimitedAt) {
+      const limitedAt = new Date(rateLimitedAt).getTime()
+      if (!Number.isNaN(limitedAt)) {
+        const limitDuration = 60 * 60 * 1000
+        remainingTime = Math.max(0, limitedAt + limitDuration - now)
+      }
+    }
+
+    const minutesRemaining = remainingTime > 0 ? Math.ceil(remainingTime / (60 * 1000)) : 0
+
+    return {
+      status,
+      isRateLimited: minutesRemaining > 0,
+      rateLimitedAt,
+      rateLimitResetAt,
+      minutesRemaining
+    }
+  }
+
+  return {
+    status,
+    isRateLimited: false,
+    rateLimitedAt,
+    rateLimitResetAt,
+    minutesRemaining: 0
+  }
+}
+
+const OPENAI_REFRESH_RETRYABLE_CODES = new Set([
+  'ECONNRESET',
+  'ECONNABORTED',
+  'ETIMEDOUT',
+  'ESOCKETTIMEDOUT',
+  'EPROTO',
+  'EPIPE',
+  'EAI_AGAIN',
+  'ENETUNREACH',
+  'EHOSTUNREACH',
+  'ECONNREFUSED'
+])
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+function isOpenAIRefreshLockContentionError(error) {
+  return error?.message === 'Token refresh in progress by another process'
+}
+
+function isTransientOpenAIRefreshError(error) {
+  if (!error) {
+    return false
+  }
+
+  if (OPENAI_REFRESH_RETRYABLE_CODES.has(error.code)) {
+    return true
+  }
+
+  if (error.status === 429 || error.status >= 500) {
+    return true
+  }
+
+  const message = String(error.message || '').toLowerCase()
+  return (
+    message.includes('client network socket disconnected before secure tls connection was established') ||
+    message.includes('socket hang up') ||
+    message.includes('timeout') ||
+    message.includes('连接超时') ||
+    message.includes('无法连接到 openai 服务器')
+  )
+}
+
+function getOpenAIRefreshRetryDelayMs(attempt) {
+  return Math.min(2000, attempt * 500)
+}
+
+function getOpenAIRefreshTempUnavailableStatus(error) {
+  if (error?.status === 429 || error?.status >= 500) {
+    return error.status
+  }
+  return 504
 }
 
 // 刷新访问令牌
@@ -338,7 +540,34 @@ async function refreshAccountToken(accountId) {
       }
     }
 
-    const newTokens = await refreshAccessToken(refreshToken, proxy)
+    let newTokens = null
+    let lastRefreshError = null
+    const maxAttempts = 3
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      try {
+        newTokens = await refreshAccessToken(refreshToken, proxy)
+        lastRefreshError = null
+        break
+      } catch (refreshError) {
+        lastRefreshError = refreshError
+        const shouldRetry = isTransientOpenAIRefreshError(refreshError) && attempt < maxAttempts
+        if (!shouldRetry) {
+          throw refreshError
+        }
+
+        const delayMs = getOpenAIRefreshRetryDelayMs(attempt)
+        logger.warn(
+          `⚠️ Transient OpenAI token refresh failure for ${accountName} (${accountId}), retrying in ${delayMs}ms (${attempt}/${maxAttempts}): ${refreshError.message}`
+        )
+        await sleep(delayMs)
+      }
+    }
+
+    if (!newTokens && lastRefreshError) {
+      throw lastRefreshError
+    }
+
     if (!newTokens) {
       throw new Error('Failed to refresh token')
     }
@@ -404,29 +633,54 @@ async function refreshAccountToken(accountId) {
 
     // 更新账户信息
     await updateAccount(accountId, updates)
+    await upstreamErrorHelper.clearTempUnavailable(accountId, 'openai').catch(() => {})
 
     logRefreshSuccess(accountId, accountName, 'openai', newTokens) // 传入完整的 newTokens 对象
     return newTokens
   } catch (error) {
     logRefreshError(accountId, account?.name || accountName, 'openai', error.message)
 
-    // 发送 Webhook 通知（如果启用）
-    try {
-      const webhookNotifier = require('../../utils/webhookNotifier')
-      await webhookNotifier.sendAccountAnomalyNotification({
-        accountId,
-        accountName: account?.name || accountName,
-        platform: 'openai',
-        status: 'error',
-        errorCode: 'OPENAI_TOKEN_REFRESH_FAILED',
-        reason: `Token refresh failed: ${error.message}`,
-        timestamp: new Date().toISOString()
-      })
+    const isLockContention = isOpenAIRefreshLockContentionError(error)
+    const isTransientFailure = isTransientOpenAIRefreshError(error)
+
+    if (isTransientFailure) {
+      await upstreamErrorHelper
+        .markTempUnavailable(
+          accountId,
+          'openai',
+          getOpenAIRefreshTempUnavailableStatus(error),
+          60,
+          {
+            source: 'token_refresh',
+            code: error.code || null,
+            message: error.message
+          }
+        )
+        .catch(() => {})
+    }
+
+    if (!isTransientFailure && !isLockContention) {
+      try {
+        const webhookNotifier = require('../../utils/webhookNotifier')
+        await webhookNotifier.sendAccountAnomalyNotification({
+          accountId,
+          accountName: account?.name || accountName,
+          platform: 'openai',
+          status: 'error',
+          errorCode: 'OPENAI_TOKEN_REFRESH_FAILED',
+          reason: `Token refresh failed: ${error.message}`,
+          timestamp: new Date().toISOString()
+        })
+        logger.info(
+          `📢 Webhook notification sent for OpenAI account ${account?.name || accountName} refresh failure`
+        )
+      } catch (webhookError) {
+        logger.error('Failed to send webhook notification:', webhookError)
+      }
+    } else {
       logger.info(
-        `📢 Webhook notification sent for OpenAI account ${account?.name || accountName} refresh failure`
+        `🔕 Skipping OpenAI refresh failure anomaly notification for ${account?.name || accountName}: ${error.message}`
       )
-    } catch (webhookError) {
-      logger.error('Failed to send webhook notification:', webhookError)
     }
 
     throw error
@@ -727,8 +981,8 @@ async function getAllAccounts() {
       // 时间戳改由 codexUsage.updatedAt 暴露
       delete accountData.codexUsageUpdatedAt
 
-      // 获取限流状态信息
-      const rateLimitInfo = await getAccountRateLimitInfo(accountData.id)
+      // 直接根据当前账户数据计算限流状态，避免每个账号再做一次 Redis 读取
+      const rateLimitInfo = buildRateLimitInfoFromAccountData(accountData)
 
       // 解析代理配置
       if (accountData.proxy) {
@@ -1025,26 +1279,21 @@ async function setAccountRateLimited(accountId, isLimited, resetsInSeconds = nul
   }
 }
 
-// 🚫 标记账户为未授权状态（401错误）
-async function markAccountUnauthorized(accountId, reason = 'OpenAI账号认证失败（401错误）') {
+// 🚫 标记账户为未授权状态（401/402错误）
+async function markAccountUnauthorized(
+  accountId,
+  reason = 'OpenAI账号认证失败（401/402错误）',
+  statusCode = 401
+) {
   const account = await getAccount(accountId)
   if (!account) {
-    throw new Error('Account not found')
+    logger.info(`ℹ️ OpenAI account ${accountId} already removed before unauthorized handling`)
+    return
   }
 
   if (isDisposableFreeAccount(account)) {
-    try {
-      await accountGroupService.removeAccountFromAllGroups(accountId, 'openai')
-      await deleteAccount(accountId)
-      logger.warn(`🗑️ Auto-deleted disposable free OpenAI account ${account.name} after 401 error`)
-      return
-    } catch (deleteError) {
-      logger.error(
-        `❌ Failed to auto-delete disposable free OpenAI account ${account.name} after 401 error:`,
-        deleteError
-      )
-      // 删除失败时退回到普通 unauthorized 逻辑，避免账号继续保持可用状态
-    }
+    await quarantineDisposableFreeAccount(account, accountId, reason, statusCode)
+    return
   }
 
   // disableAutoProtection 检查
@@ -1052,7 +1301,9 @@ async function markAccountUnauthorized(accountId, reason = 'OpenAI账号认证�
     logger.info(
       `🛡️ Account ${accountId} has auto-protection disabled, skipping markAccountUnauthorized`
     )
-    upstreamErrorHelper.recordErrorHistory(accountId, 'openai', 401, 'auth_error').catch(() => {})
+    upstreamErrorHelper
+      .recordErrorHistory(accountId, 'openai', statusCode, 'auth_error')
+      .catch(() => {})
     return
   }
 
@@ -1165,42 +1416,7 @@ async function getAccountRateLimitInfo(accountId) {
   if (!account) {
     return null
   }
-
-  const status = account.rateLimitStatus || 'normal'
-  const rateLimitedAt = account.rateLimitedAt || null
-  const rateLimitResetAt = account.rateLimitResetAt || null
-
-  if (status === 'limited') {
-    const now = Date.now()
-    let remainingTime = 0
-
-    if (rateLimitResetAt) {
-      const resetAt = new Date(rateLimitResetAt).getTime()
-      remainingTime = Math.max(0, resetAt - now)
-    } else if (rateLimitedAt) {
-      const limitedAt = new Date(rateLimitedAt).getTime()
-      const limitDuration = 60 * 60 * 1000 // 默认1小时
-      remainingTime = Math.max(0, limitedAt + limitDuration - now)
-    }
-
-    const minutesRemaining = remainingTime > 0 ? Math.ceil(remainingTime / (60 * 1000)) : 0
-
-    return {
-      status,
-      isRateLimited: minutesRemaining > 0,
-      rateLimitedAt,
-      rateLimitResetAt,
-      minutesRemaining
-    }
-  }
-
-  return {
-    status,
-    isRateLimited: false,
-    rateLimitedAt,
-    rateLimitResetAt,
-    minutesRemaining: 0
-  }
+  return buildRateLimitInfoFromAccountData(account)
 }
 
 // 更新账户使用统计（tokens参数可选，默认为0，仅更新最后使用时间）
@@ -1281,6 +1497,9 @@ module.exports = {
   selectAvailableAccount,
   refreshAccountToken,
   isTokenExpired,
+  isDisposableFreeAccount,
+  shouldRotateDisposableFreeAccount,
+  retireDisposableFreeAccountAfterSuccess,
   setAccountRateLimited,
   markAccountUnauthorized,
   resetAccountStatus,

@@ -19,19 +19,51 @@
             <p class="text-xs text-gray-500 dark:text-gray-400">上次更新: {{ lastUpdated }}</p>
           </div>
         </div>
-        <button
-          :class="[
-            'flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium shadow-sm transition',
-            refreshing
-              ? 'cursor-not-allowed bg-gray-200 text-gray-400 dark:bg-gray-700 dark:text-gray-500'
-              : 'bg-blue-500 text-white hover:bg-blue-600 hover:shadow-md'
-          ]"
-          :disabled="refreshing"
-          @click="handleRefresh"
-        >
-          <i :class="['fas', refreshing ? 'fa-spinner fa-spin' : 'fa-sync-alt']" />
-          {{ refreshing ? '刷新中...' : '立即刷新' }}
-        </button>
+        <div class="flex flex-wrap items-center gap-2">
+          <button
+            v-if="!editMode"
+            class="flex items-center gap-2 rounded-lg bg-emerald-500 px-4 py-2 text-sm font-medium text-white shadow-sm transition hover:bg-emerald-600 hover:shadow-md"
+            @click="startEdit"
+          >
+            <i class="fas fa-pen" />
+            编辑价格
+          </button>
+          <template v-else>
+            <button
+              class="flex items-center gap-2 rounded-lg bg-gray-200 px-4 py-2 text-sm font-medium text-gray-700 shadow-sm transition hover:bg-gray-300 dark:bg-gray-700 dark:text-gray-200 dark:hover:bg-gray-600"
+              @click="cancelEdit"
+            >
+              <i class="fas fa-times" />
+              取消
+            </button>
+            <button
+              :class="[
+                'flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium text-white shadow-sm transition',
+                saving
+                  ? 'cursor-not-allowed bg-emerald-300'
+                  : 'bg-emerald-500 hover:bg-emerald-600 hover:shadow-md'
+              ]"
+              :disabled="saving"
+              @click="handleSave"
+            >
+              <i :class="['fas', saving ? 'fa-spinner fa-spin' : 'fa-save']" />
+              {{ saving ? '保存中...' : '保存修改' }}
+            </button>
+          </template>
+          <button
+            :class="[
+              'flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium shadow-sm transition',
+              refreshing
+                ? 'cursor-not-allowed bg-gray-200 text-gray-400 dark:bg-gray-700 dark:text-gray-500'
+                : 'bg-blue-500 text-white hover:bg-blue-600 hover:shadow-md'
+            ]"
+            :disabled="refreshing || editMode"
+            @click="handleRefresh"
+          >
+            <i :class="['fas', refreshing ? 'fa-spinner fa-spin' : 'fa-sync-alt']" />
+            {{ refreshing ? '刷新中...' : '立即刷新' }}
+          </button>
+        </div>
       </div>
     </div>
 
@@ -134,27 +166,76 @@
             <td
               class="whitespace-nowrap px-3 py-2.5 text-right font-mono text-gray-700 dark:text-gray-300"
             >
-              {{ formatPrice(model.inputCost) }}
+              <input
+                v-if="editMode"
+                class="w-28 rounded border border-gray-300 bg-white px-2 py-1 text-right text-xs text-gray-700 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200"
+                step="0.000001"
+                type="number"
+                :value="model.inputCost"
+                @input="updatePriceField(model.name, 'input_cost_per_token', $event.target.value)"
+              />
+              <span v-else>{{ formatPrice(model.inputCost) }}</span>
             </td>
             <td
               class="whitespace-nowrap px-3 py-2.5 text-right font-mono text-gray-700 dark:text-gray-300"
             >
-              {{ formatPrice(model.outputCost) }}
+              <input
+                v-if="editMode"
+                class="w-28 rounded border border-gray-300 bg-white px-2 py-1 text-right text-xs text-gray-700 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200"
+                step="0.000001"
+                type="number"
+                :value="model.outputCost"
+                @input="updatePriceField(model.name, 'output_cost_per_token', $event.target.value)"
+              />
+              <span v-else>{{ formatPrice(model.outputCost) }}</span>
             </td>
             <td
               class="hidden whitespace-nowrap px-3 py-2.5 text-right font-mono text-gray-500 dark:text-gray-400 md:table-cell"
             >
-              {{ formatPrice(model.cacheCreateCost) }}
+              <input
+                v-if="editMode"
+                class="w-28 rounded border border-gray-300 bg-white px-2 py-1 text-right text-xs text-gray-700 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200"
+                step="0.000001"
+                type="number"
+                :value="model.cacheCreateCost"
+                @input="
+                  updatePriceField(
+                    model.name,
+                    'cache_creation_input_token_cost',
+                    $event.target.value
+                  )
+                "
+              />
+              <span v-else>{{ formatPrice(model.cacheCreateCost) }}</span>
             </td>
             <td
               class="hidden whitespace-nowrap px-3 py-2.5 text-right font-mono text-gray-500 dark:text-gray-400 md:table-cell"
             >
-              {{ formatPrice(model.cacheReadCost) }}
+              <input
+                v-if="editMode"
+                class="w-28 rounded border border-gray-300 bg-white px-2 py-1 text-right text-xs text-gray-700 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200"
+                step="0.000001"
+                type="number"
+                :value="model.cacheReadCost"
+                @input="
+                  updatePriceField(model.name, 'cache_read_input_token_cost', $event.target.value)
+                "
+              />
+              <span v-else>{{ formatPrice(model.cacheReadCost) }}</span>
             </td>
             <td
               class="hidden whitespace-nowrap px-3 py-2.5 text-right text-gray-500 dark:text-gray-400 lg:table-cell"
             >
-              {{ formatContext(model.maxTokens) }}
+              <input
+                v-if="editMode"
+                class="w-24 rounded border border-gray-300 bg-white px-2 py-1 text-right text-xs text-gray-700 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200"
+                min="0"
+                step="1"
+                type="number"
+                :value="model.maxTokens"
+                @input="updateIntegerField(model.name, 'max_tokens', $event.target.value)"
+              />
+              <span v-else>{{ formatContext(model.maxTokens) }}</span>
             </td>
           </tr>
           <tr v-if="sortedModels.length === 0">
@@ -179,14 +260,18 @@ import { ref, computed, onMounted } from 'vue'
 import {
   getModelPricingApi,
   getModelPricingStatusApi,
-  refreshModelPricingApi
+  refreshModelPricingApi,
+  updateModelPricingApi
 } from '@/utils/http_apis'
 import { showToast } from '@/utils/tools'
 
 // ========== 状态 ==========
 const loading = ref(false)
 const refreshing = ref(false)
+const saving = ref(false)
+const editMode = ref(false)
 const pricingData = ref({})
+const editablePricingData = ref({})
 const pricingStatus = ref({})
 const searchQuery = ref('')
 const activePlatform = ref('all')
@@ -203,6 +288,9 @@ const platformTabs = [
 
 // ========== 计算属性 ==========
 const modelCount = computed(() => Object.keys(pricingData.value).length)
+const activePricingData = computed(() =>
+  editMode.value ? editablePricingData.value : pricingData.value
+)
 
 const lastUpdated = computed(() => {
   if (!pricingStatus.value.lastUpdated) return '未知'
@@ -210,7 +298,7 @@ const lastUpdated = computed(() => {
 })
 
 const allModels = computed(() =>
-  Object.entries(pricingData.value).map(([name, data]) => ({
+  Object.entries(activePricingData.value).map(([name, data]) => ({
     name,
     provider: detectProvider(name),
     inputCost: (data.input_cost_per_token || 0) * 1e6,
@@ -326,6 +414,7 @@ const loadData = async () => {
   ])
   if (pricingResult.success) {
     pricingData.value = pricingResult.data
+    editablePricingData.value = JSON.parse(JSON.stringify(pricingResult.data))
   } else {
     showToast(pricingResult.message || '加载模型价格失败', 'error')
   }
@@ -335,6 +424,45 @@ const loadData = async () => {
     showToast(statusResult.message || '获取价格状态失败', 'error')
   }
   loading.value = false
+}
+
+const startEdit = () => {
+  editablePricingData.value = JSON.parse(JSON.stringify(pricingData.value))
+  editMode.value = true
+}
+
+const cancelEdit = () => {
+  editablePricingData.value = JSON.parse(JSON.stringify(pricingData.value))
+  editMode.value = false
+}
+
+const updatePriceField = (modelName, field, value) => {
+  const parsed = Number(value)
+  if (!editablePricingData.value[modelName]) return
+  editablePricingData.value[modelName][field] = Number.isFinite(parsed) ? parsed / 1e6 : 0
+}
+
+const updateIntegerField = (modelName, field, value) => {
+  const parsed = Number(value)
+  if (!editablePricingData.value[modelName]) return
+  editablePricingData.value[modelName][field] = Number.isFinite(parsed)
+    ? Math.max(0, Math.round(parsed))
+    : 0
+}
+
+const handleSave = async () => {
+  saving.value = true
+  const result = await updateModelPricingApi(editablePricingData.value)
+  if (result.success) {
+    pricingData.value = result.data || editablePricingData.value
+    editablePricingData.value = JSON.parse(JSON.stringify(pricingData.value))
+    editMode.value = false
+    showToast('模型价格已保存', 'success')
+    await loadData()
+  } else {
+    showToast(result.message || '保存模型价格失败', 'error')
+  }
+  saving.value = false
 }
 
 const handleRefresh = async () => {

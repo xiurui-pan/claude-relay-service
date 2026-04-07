@@ -1718,6 +1718,48 @@
 
               <!-- 限流时长字段 - 隐藏不显示，使用默认值60 -->
               <input v-model.number="form.rateLimitDuration" type="hidden" value="60" />
+
+              <div class="grid grid-cols-3 gap-4">
+                <div>
+                  <label class="mb-3 block text-sm font-semibold text-gray-700 dark:text-gray-300">
+                    每日额度限制 ($)
+                  </label>
+                  <input
+                    v-model.number="form.dailyQuota"
+                    class="form-input w-full border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200"
+                    min="0"
+                    placeholder="0 表示不限制"
+                    step="0.01"
+                    type="number"
+                  />
+                </div>
+                <div>
+                  <label class="mb-3 block text-sm font-semibold text-gray-700 dark:text-gray-300">
+                    总额度限制 ($)
+                  </label>
+                  <input
+                    v-model.number="form.totalQuota"
+                    class="form-input w-full border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200"
+                    min="0"
+                    placeholder="0 表示不限制"
+                    step="0.01"
+                    type="number"
+                  />
+                </div>
+                <div>
+                  <label class="mb-3 block text-sm font-semibold text-gray-700 dark:text-gray-300">
+                    额度重置时间
+                  </label>
+                  <input
+                    v-model="form.quotaResetTime"
+                    class="form-input w-full border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200"
+                    type="time"
+                  />
+                </div>
+              </div>
+              <p class="text-xs text-gray-500 dark:text-gray-400">
+                可以只设置总额度，不设置每日额度；每日额度填 0 时表示不做每日重置限制
+              </p>
             </div>
 
             <!-- Gemini API 配置 -->
@@ -3509,6 +3551,19 @@
               </div>
               <div>
                 <label class="mb-3 block text-sm font-semibold text-gray-700 dark:text-gray-300">
+                  总额度限制 ($)
+                </label>
+                <input
+                  v-model.number="form.totalQuota"
+                  class="form-input w-full border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200"
+                  min="0"
+                  placeholder="0 表示不限制"
+                  step="0.01"
+                  type="number"
+                />
+              </div>
+              <div>
+                <label class="mb-3 block text-sm font-semibold text-gray-700 dark:text-gray-300">
                   额度重置时间
                 </label>
                 <input
@@ -3516,6 +3571,44 @@
                   class="form-input w-full border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200"
                   type="time"
                 />
+              </div>
+            </div>
+            <p class="text-xs text-gray-500 dark:text-gray-400">
+              可以只设置总额度，不设置每日额度；每日额度填 0 时表示不做每日重置限制
+            </p>
+
+            <div
+              v-if="isEdit && form.totalQuota > 0"
+              class="rounded-lg bg-gray-50 p-4 dark:bg-gray-800"
+            >
+              <div class="mb-2 flex items-center justify-between">
+                <span class="text-sm font-semibold text-gray-700 dark:text-gray-300">
+                  总额度使用情况
+                </span>
+                <span class="text-sm text-gray-500 dark:text-gray-400">
+                  ${{ calculateTotalUsage().toFixed(4) }} / ${{ form.totalQuota.toFixed(2) }}
+                </span>
+              </div>
+              <div class="relative h-2 w-full rounded-full bg-gray-200 dark:bg-gray-700">
+                <div
+                  class="absolute left-0 top-0 h-full rounded-full transition-all"
+                  :class="
+                    totalUsagePercentage >= 90
+                      ? 'bg-red-500'
+                      : totalUsagePercentage >= 70
+                        ? 'bg-yellow-500'
+                        : 'bg-green-500'
+                  "
+                  :style="{ width: `${Math.min(totalUsagePercentage, 100)}%` }"
+                />
+              </div>
+              <div class="mt-2 flex items-center justify-between text-xs">
+                <span class="text-gray-500 dark:text-gray-400">
+                  剩余: ${{ Math.max(0, form.totalQuota - calculateTotalUsage()).toFixed(2) }}
+                </span>
+                <span class="text-gray-500 dark:text-gray-400">
+                  {{ totalUsagePercentage.toFixed(1) }}% 已使用
+                </span>
               </div>
             </div>
 
@@ -4492,8 +4585,10 @@ const form = ref({
     props.account?.tempUnavailable5xxTtlSeconds
   ),
   // 额度管理字段
-  dailyQuota: props.account?.dailyQuota || 0,
-  dailyUsage: props.account?.dailyUsage || 0,
+  dailyQuota: Number(props.account?.dailyQuota || 0),
+  dailyUsage: Number(props.account?.dailyUsage || 0),
+  totalQuota: Number(props.account?.totalQuota || 0),
+  totalUsage: Number(props.account?.totalUsage || 0),
   quotaResetTime: props.account?.quotaResetTime || '00:00',
   // 并发控制字段
   maxConcurrentTasks: props.account?.maxConcurrentTasks || 0,
@@ -4742,8 +4837,22 @@ const calculateCurrentUsage = () => {
   }
 
   // 如果已经加载了今日使用数据，直接使用
-  if (typeof form.value.dailyUsage === 'number') {
-    return form.value.dailyUsage
+  const usage = Number(form.value.dailyUsage || 0)
+  if (Number.isFinite(usage)) {
+    return usage
+  }
+
+  return 0
+}
+
+const calculateTotalUsage = () => {
+  if (!isEdit.value || !props.account?.id) {
+    return 0
+  }
+
+  const usage = Number(form.value.totalUsage || 0)
+  if (Number.isFinite(usage)) {
+    return usage
   }
 
   return 0
@@ -4756,6 +4865,14 @@ const usagePercentage = computed(() => {
   }
   const currentUsage = calculateCurrentUsage()
   return (currentUsage / form.value.dailyQuota) * 100
+})
+
+const totalUsagePercentage = computed(() => {
+  if (!form.value.totalQuota || form.value.totalQuota <= 0) {
+    return 0
+  }
+  const totalUsage = calculateTotalUsage()
+  return (totalUsage / form.value.totalQuota) * 100
 })
 
 // 当前账户的 API Key 数量（仅用于展示）
@@ -5718,6 +5835,7 @@ const createAccount = async () => {
       data.priority = form.value.priority || 50
       data.rateLimitDuration = 60 // 默认值60，不从用户输入获取
       data.dailyQuota = form.value.dailyQuota || 0
+      data.totalQuota = form.value.totalQuota || 0
       data.quotaResetTime = form.value.quotaResetTime || '00:00'
     } else if (form.value.platform === 'gemini-antigravity') {
       // Antigravity OAuth - set oauthProvider, submission happens below
@@ -6088,6 +6206,7 @@ const updateAccount = async () => {
       data.priority = form.value.priority || 50
       // 编辑时不上传 rateLimitDuration，保持原值
       data.dailyQuota = form.value.dailyQuota || 0
+      data.totalQuota = form.value.totalQuota || 0
       data.quotaResetTime = form.value.quotaResetTime || '00:00'
     }
 
@@ -6735,8 +6854,10 @@ watch(
         // Gemini-API 特定字段
         baseUrl: newAccount.baseUrl || 'https://generativelanguage.googleapis.com',
         // 额度管理字段
-        dailyQuota: newAccount.dailyQuota || 0,
-        dailyUsage: newAccount.dailyUsage || 0,
+        dailyQuota: Number(newAccount.dailyQuota || 0),
+        dailyUsage: Number(newAccount.dailyUsage || 0),
+        totalQuota: Number(newAccount.totalQuota || 0),
+        totalUsage: Number(newAccount.totalUsage || 0),
         quotaResetTime: newAccount.quotaResetTime || '00:00',
         // 并发控制字段
         maxConcurrentTasks: newAccount.maxConcurrentTasks || 0,
